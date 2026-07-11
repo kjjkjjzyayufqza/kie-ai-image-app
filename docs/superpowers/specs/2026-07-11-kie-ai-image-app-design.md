@@ -15,7 +15,7 @@
 
 第一版的核心价值：
 
-1. 同一个 prompt 可一次创建多份独立任务，例如 `5x` 表示提交 5 个任务。
+1. 每个对话回合可为同一个 prompt 输入自定义 `Xx` 数量，例如 `5x` 表示提交 5 个独立任务；能力不绑定固定快捷数字。
 2. 房间、任务、prompt、参数和图片 URL 只保存在当前浏览器站点空间。
 3. 新房间默认空白，不自动继承任何描述词。用户只能通过可见的复制按钮手动复制。
 4. 页面关闭后，Kie 远端任务仍可能继续。再次打开时，客户端凭本地保存的 `taskId` 补查结果。
@@ -352,20 +352,22 @@ type ModelAdapter = {
 
 ## 7. 批量任务与恢复
 
-### 7.1 `5x` 语义
+### 7.1 自定义 `Xx` 语义
 
 用户选择数量 `N` 后：
 
 1. 创建一个 `batchId`。
 2. 固化 prompt、模型、参考 URL 和参数快照。
 3. 在 IndexedDB 预写 `N` 条 `queued` 任务。
-4. leader 在 Dexie 事务内写入新的 `submissionAttemptId`、`leaseOwner`、`leaseUntil`、递增 `fencingToken`、`requestStartedAt` 并把状态改为 `submitting`，然后才发送请求。
-5. 每条收到 `remoteTaskId` 后，只能在 `submissionAttemptId` 匹配且 `remoteTaskId` 仍为空时条件写入，再释放提交 lease；迟到响应只能绑定原 attempt。
-6. 每条成功、失败、未知互不影响。
-7. 只有 N 条均取得并持久化 `remoteTaskId` 后才显示“5x 已提交”；此前显示“正在提交 3/5”。
-8. UI 汇总 `成功 3 / 生成中 1 / 失败 1`。
+4. UI 立即在本次 turn 内渲染 `N` 个固定顺序、固定尺寸的任务占位，不等待任何远端响应。
+5. leader 在 Dexie 事务内写入新的 `submissionAttemptId`、`leaseOwner`、`leaseUntil`、递增 `fencingToken`、`requestStartedAt` 并把状态改为 `submitting`，然后才发送请求。
+6. 每条收到 `remoteTaskId` 后，只能在 `submissionAttemptId` 匹配且 `remoteTaskId` 仍为空时条件写入，再释放提交 lease；迟到响应只能绑定原 attempt。
+7. 每张图片一旦成功就立即替换对应占位并渲染，不等待整批完成，也不因完成顺序改变卡片位置。
+8. 每条成功、失败、未知互不影响；失败卡片保留错误和重试入口。
+9. 只有 N 条均取得并持久化 `remoteTaskId` 后才显示“Xx 已提交”；此前显示“正在提交 3/N”。
+10. UI 持续汇总 `成功 3 / 生成中 1 / 失败 1 / 共 N`。
 
-数量控件范围默认 1 至 10，并提供 `1x`、`2x`、`4x`、`5x` 快捷项。
+数量控件必须同时提供数字输入和快捷项 `1x`、`2x`、`4x`、`5x`、`10x`。首发允许任意 1 至 100 的整数，不能静默截断；这只是防止误操作的产品安全上限，不是固定批量能力。超过 Kie 瞬时限流时，任务仍全部显示，但按队列分波提交。
 
 ### 7.2 状态机
 
@@ -494,6 +496,7 @@ queued -> canceled-local
 - 参考图拖放、粘贴、排序、删除。
 - 模型参数面板。
 - 数量 stepper 和快捷 `5x`。
+- 可直接输入自定义 X，提交前显示本回合准确任务总数；超过 20 张时要求二次确认，避免误扣 credits。
 - 预估任务数，不伪造价格。
 - 提交、停止本地队列。
 - 校验错误显示在对应控件附近。
@@ -621,6 +624,8 @@ URL 按用途使用不同 schema：reference upload URL、Kie result URL、downl
 
 - 模型适配器 schema 和参数组合。
 - `5x` 展开为五个独立任务。
+- 自定义 `1x`、`7x`、`37x` 能准确展开为对应数量的独立任务，越界值被明确拒绝且不静默截断。
+- X 个占位立即同时出现，结果按完成时间逐张渲染但保持原 batchIndex 顺序。
 - 队列限流、退避、局部失败和歧义超时。
 - 双标签页同时打开时，同一 queued Task 只提交一次。
 - queued、stale submitting、丢 Key和换 Key 的恢复。
@@ -675,7 +680,7 @@ pnpm run build
 2. 不配置数据库、S3 或其他应用自有图片存储。
 3. API Key、房间、任务和 URL 在不同浏览器或 origin 间互不共享。
 4. 新房间为空，只能通过复制图标手动复制 prompt。
-5. `5x` 可靠创建五个独立任务，多标签页下每个本地任务最多提交一次，并分别显示状态。
+5. 每个对话回合可选择任意 1 至 100 的 `Xx`；立即显示 X 个占位，随后逐张渲染结果，多标签页下每个本地任务最多提交一次。
 6. 已持久化 `remoteTaskId` 且已保留或重新提供 fingerprint 匹配 Key 时，页面重开后能补查未完成任务；没有 `remoteTaskId` 的歧义提交不自动重试。
 7. 图库只保存 Kie URL 和元数据，不保存图片 Blob/base64。
 8. URL 失效时显示占位并保留 prompt、参数和 taskId。
