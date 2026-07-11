@@ -1,993 +1,715 @@
-# Kie AI Image App 安全优先产品与技术设计
+# Kie AI Image Workspace 设计规格
 
 日期：2026-07-11  
-状态：待用户书面审阅  
-仓库：`kie-ai-image-app`
+状态：待用户确认
 
-## 1. 执行摘要
+目标平台：Next.js on Vercel
 
-Kie AI Image App 是公开注册、多租户、用户自带 Kie API Key 的图片生产工作台。任何人可以注册，但匿名用户不能生成图片；完成邮箱验证、强制 MFA/Passkey 并连接自己的 Kie 凭据后，才能提交任务。
+包管理器：pnpm
 
-产品支持文本生图、图生图、多房间、同 prompt 批量生成、复杂参数批次、关闭浏览器后继续运行、Kie webhook、服务端补查、永久资产归档、实时 credits 与资产库。
+## 1. 产品定义
 
-安全是首要设计约束。浏览器、Next.js Web 运行时、日志、数据库备份和普通管理员都不能取得已保存的 Kie 明文 Key。核心架构为：
+这是一个无登录、浏览器本地优先的 Kie AI 图片工作台。
+
+用户在浏览器中配置自己的 Kie API Key，创建多个独立房间，提交文本生图或图生图任务，并把 Kie 返回的图片 URL 收集到图库。应用不保存图片二进制，不承诺 URL 永久有效，也不建立云端账号或跨设备同步。
+
+第一版的核心价值：
+
+1. 同一个 prompt 可一次创建多份独立任务，例如 `5x` 表示提交 5 个任务。
+2. 房间、任务、prompt、参数和图片 URL 只保存在当前浏览器站点空间。
+3. 新房间默认空白，不自动继承任何描述词。用户只能通过可见的复制按钮手动复制。
+4. 页面关闭后，Kie 远端任务仍可能继续。再次打开时，客户端凭本地保存的 `taskId` 补查结果。
+5. 图库直接渲染 Kie URL。URL 失效时保留任务和 prompt 元数据，图片显示不可用状态。
+6. 顶栏显示官方剩余 credits、连接状态，以及仅由本浏览器任务计算出的消费统计。
+
+## 2. 明确移除的内容
+
+本版本不包含：
+
+- 登录、邮箱、密码、MFA、组织、租户或用户账户。
+- S3、对象存储、数据库、服务端磁盘、图片二进制归档。
+- 服务端保存 API Key、房间、任务、图片 URL 或用户偏好。
+- 服务端 webhook 持久化和后台 worker。
+- 跨浏览器、跨设备或多人同步。
+- 平台共享 credits、平台代付或公共 API Key。
+- 保证图片 URL 长期可访问。
+- 浏览器静默写入用户本地磁盘。
+
+因此，每个浏览器配置文件和每个站点 origin 都是独立工作区。清除站点数据、换浏览器、换域名或使用隐私窗口都会得到不同的数据集。
+
+## 3. 架构
 
 ```text
 Browser
-  -> Vercel WAF / Bot Management
-  -> Next.js BFF on Vercel
-  -> Auth0 Universal Login
-  -> Neon Postgres with FORCE RLS + transactional outbox
-  -> AWS SQS FIFO + isolated Lambda workers
-  -> AWS KMS / Kie API / private S3
-
-Kie webhook
-  -> AWS API Gateway + AWS WAF
-  -> isolated webhook Lambda
-  -> inbox/outbox -> SQS -> authoritative recordInfo -> private S3
+  ├─ React UI
+  ├─ one cross-tab queue leader
+  ├─ in-memory active queue for the leader tab
+  ├─ localStorage: API Key and lightweight preferences
+  ├─ IndexedDB: rooms, tasks, prompts, parameters, result URLs
+  └─ direct render of Kie result URLs
+          │
+          ├─ same-origin Next.js stateless proxy
+          │      └─ Kie create/query/credits/download APIs
+          │
+          └─ Kie temporary file upload API
+                 └─ reference image URL for image-to-image
 ```
 
-`localStorage` 只保存非敏感 UI 偏好和未提交草稿。Kie API Key、webhook HMAC、Auth0 token、session、signed URL 永不进入 `localStorage`。
+Next.js 服务端是无状态代理。每个请求携带当前浏览器提供的 Key，代理转发后立即丢弃，不写数据库、不写日志、不缓存、不进入环境变量。
 
-“交易所级”在本设计中表示采用金融级控制思路，不代表自动取得任何认证。公开上线仍必须通过独立渗透测试、密钥轮换、恢复演练、持续监控、事故响应和值班制度。
+同一 origin 的多个标签页共享 IndexedDB。使用 Web Locks 选出唯一队列 leader，由 leader 负责提交、轮询和 credits 定时刷新；其他标签页通过 BroadcastChannel 接收状态。若浏览器不支持 Web Locks，则用 IndexedDB 原子 lease、递增 fencing token 和短租约续期兜底。任何标签页都不能仅凭内存状态提交共享的 `queued` 任务。
 
-## 2. 产品模式
+### 3.1 为什么不能使用 webhook
 
-### 2.1 首发模式：公开多租户 BYOK
+浏览器关闭后，任何服务端 webhook 都不能直接写入该浏览器的 IndexedDB。没有账号和服务端数据库时，服务端也无法可靠判断结果属于哪个浏览器工作区。
 
-- 用户公开注册。
-- 每个用户可连接多个自己的 Kie 账户/Key。
-- 每个连接必须同时配置 Kie API Key 和 Kie webhook HMAC Key。
-- 每个连接独立显示 credits、状态、任务、消费和健康度。
-- 每个任务固定绑定一个 connection 和 credential version。
-- 用户只看自己的连接、任务、资产和统计。
+因此采用客户端恢复：
 
-### 2.2 禁止的首发模式
+1. 创建任务前先在 IndexedDB 写入本地任务。
+2. Kie 返回 `taskId` 后立即更新本地记录。
+3. 页面打开时扫描非终态任务。
+4. 对每个已知 `taskId` 调用 `recordInfo` 补查。
+5. 若 Kie 仍保留结果，则保存返回的图片 URL。
 
-- 禁止匿名生成。
-- 禁止把一个共享 Kie Key 暴露给所有用户消费。
-- 禁止在浏览器保存 Kie Key。
-- 禁止只靠前端限流控制付费调用。
-- 禁止把平台共享 credits 与 BYOK 混在同一账务模型。
+边界：如果创建请求超时且客户端没有收到 `taskId`，应用不能可靠找回该任务，也不能自动重试，否则可能重复扣费。
 
-如果未来由平台承担 credits，必须单独设计预付双重记账账本、原子额度预留/结算、支付、退款、反欺诈和全局熔断，不属于本规格。
+## 4. 本地数据模型
 
-## 3. 目标
+### 4.1 localStorage
 
-1. 完整支持 GPT Image 2 Text-to-Image 和 `gpt-image-2-image-to-image`。
-2. GPT Image 2 图生图支持最多 16 张有序参考图、单张 30MB、1K/2K/4K 和官方比例限制。
-3. 支持同一 prompt 一次生成 `1-10` 张，包括 `5x`。
-4. 支持多 prompt 批次、参数预设、参数扫描和高级 JSON。
-5. 支持多个独立房间；新房间为空，不自动继承隐藏 prompt 或描述词。
-6. 只通过 Copy 图标复制可见 prompt，再由用户手动粘贴。
-7. 浏览器关闭后，任务仍能提交、补查、完成和归档。
-8. 输入和生成图片永久存入用户隔离的私有对象存储，不依赖 Kie 临时 URL。
-9. 提供永久资产库、标签、收藏、集合、比较、搜索、谱系和导出。
-10. 近实时显示当前连接的官方 credits、任务、消费、队列、webhook 和归档健康。
-11. 使用白色 shadcn/ui 风格，桌面和手机无重叠、截断或布局跳动。
-12. 通过强身份、KMS、RLS、WAF、多维限流、幂等、审计、备份和上线门禁保护用户。
-13. 不采用 TDD；垂直功能完成后集中执行逻辑、集成、安全、浏览器和构建验证。
+仅保存小型、同步读取的数据：
 
-## 4. 非目标
-
-1. 不使用 File System Access API，不自动写入用户电脑目录。
-2. 不做团队协作、组织 RBAC、评论或审核流。
-3. 不在首发提供平台共享 credits 或收费账本。
-4. 不把 Vercel/AWS 临时文件系统当持久层。
-5. 不把 Kie 临时 URL 当最终资产地址。
-6. 不实现房间间隐藏上下文或自动 prompt 拼接。
-7. 不显示完整 Kie Key、HMAC Key、Auth token 或 signed URL。
-8. 不伪造 Kie 未公开的 Key 名称、创建时间、过期时间、cap 或账单字段。
-9. 不直接信任 webhook body 中的状态或结果 URL。
-10. 不声称只靠代码即可达到交易所合规等级。
-
-## 5. 安全原则
-
-1. 默认拒绝，最小权限。
-2. 身份、租户、credential 和 asset 都由服务端推导，不接受客户端声明所有者。
-3. Web、credential ingest、credential authorization、webhook、Kie execution、media worker 和管理员权限分离。
-4. 密钥只在最小 worker 内存中短暂解密。
-5. 所有付费调用必须服务端授权、限流、幂等和审计。
-6. 所有外部输入，包括 Kie 官方结果 URL，都视为不可信。
-7. 数据库 RLS 是第二道授权边界，不替代应用授权。
-8. 任何 at-least-once 执行都必须幂等。
-9. 生成成功和永久保存是两个独立状态。
-10. 安全关键依赖故障时，生成、密钥修改和账户恢复 fail closed。
-11. 安全事实必须可审计、可撤销、可告警、可恢复。
-
-## 6. 身份与会话
-
-### 6.1 身份提供商
-
-- 使用 Auth0 Universal Login，不自建密码系统。
-- 使用 OIDC Authorization Code Flow with PKCE。
-- production、preview、development 使用完全独立的 Auth0 tenant、client 和 callback allowlist。
-- 用户必须验证邮箱。
-- Passkey/WebAuthn 为首选登录方式。
-- MFA 对所有生成用户强制开启；允许 WebAuthn 安全钥匙、平台生物识别和 TOTP。
-- SMS 不作为密钥修改、账户恢复或管理员操作的高可信因子。
-- 恢复码只显示一次，存储 hash，使用后立即失效。
-
-### 6.2 Auth0 攻击防护
-
-- 开启 breached password detection。
-- 开启 brute-force、suspicious IP 和 bot protection。
-- 高风险登录启用 Adaptive MFA；若计划不支持 Adaptive MFA，则使用 Always MFA。
-- 注册、登录、重置和恢复使用 CAPTCHA/managed challenge 作为辅助控制。
-- 错误响应不暴露邮箱是否存在。
-- Auth0 日志实时流入 SIEM。
-
-### 6.3 会话
-
-- Browser 只持 `__Host-kie-session; HttpOnly; Secure; SameSite=Lax; Path=/` cookie，不设置 Domain。
-- JWT、access token 和 rotating refresh token 由 BFF/Auth0 SDK 管理，不进入 `localStorage`。
-- 应用另建 server-side session registry：随机 opaque session ID，cookie 存原值，数据库只存 hash、user/tenant、device、Auth0 token-family、idle/absolute expiry、last_seen 和 revoked_at；每次 BFF 请求都校验，保证被盗 cookie 可立即撤销。
-- Access token 短期有效；refresh token rotation 开启 reuse detection。
-- 应用会话 30 分钟 idle、12 小时 absolute。
-- 登录、step-up、角色变化和恢复后旋转 session ID。
-- 用户可查看并撤销设备会话。
-- 登出、密码/Passkey 重置、异常 token reuse 和账户恢复会撤销相关 token family。
-- OIDC 固定 issuer、audience 和允许算法；严格验证 JWKS、state、nonce、PKCE、`iss/aud/exp/iat`。
-- 所有 GET 无副作用。所有 mutation 校验精确 production Origin、session-bound CSRF token 和 Content-Type；CORS 使用 exact allowlist，不回显任意 Origin。
-
-### 6.4 Step-up
-
-以下操作要求 5 分钟内完成 phishing-resistant MFA 或等价 fresh MFA。成功后服务端创建绑定 session、action、target、nonce、2 分钟有效且一次消费的 step-up transaction marker；API 同时验证 Auth0 `auth_time`、`amr/acr` 和 marker，不能只信 UI 或陈旧 token：
-
-- 添加、轮换、禁用、紧急销毁 Kie credential。
-- 查看安全中心和撤销其他会话。
-- 导出全部资产。
-- 永久删除资产或账户。
-- 修改存储/任务/消费上限。
-- 管理员权限变化和安全配置。
-
-### 6.5 恢复
-
-- 失去原 MFA 的恢复触发 24 小时安全冷却。
-- 冷却期间禁止生成、credential 变更、导出和账户删除。
-- 通知全部已验证渠道和现有会话。
-- 恢复完成后撤销旧会话、旧恢复码和 remembered browser。
-
-## 7. 多租户隔离
-
-### 7.1 Tenant 来源
-
-- 首发固定 `1 user = 1 tenant`；注册事务同时创建 `users`、`tenants` 和唯一 owner `tenant_memberships`。
-- Auth0 `sub` 只映射内部随机 user UUID，再通过 membership 得到 tenant UUID。
-- 任何 API 都不接受客户端 `tenant_id` 作为授权依据。
-- 所有对象查询从已验证 session 派生 tenant。
-- 首发不提供邀请或第二成员；保留 membership 表只是为了让 owner/tenant 语义和 RLS 一致，不代表已实现团队功能。
-
-### 7.2 Postgres RLS
-
-- 所有业务表含 `tenant_id NOT NULL`。
-- 跨表关系使用 `(tenant_id, id)` composite foreign key，防止跨租户关系注入。
-- 所有 tenant 表执行 `ENABLE ROW LEVEL SECURITY` 和 `FORCE ROW LEVEL SECURITY`。
-- Web runtime DB role 不是 table owner，必须 `NOBYPASSRLS`。
-- 在同一事务使用 `set_config(..., true)` 设置 tenant context，禁止连接池 session 级 `SET` 泄漏。
-- 应用层仍显式加入 tenant 条件并检查所有权。
-
-### 7.3 数据库角色
-
-- `web_runtime`：只能执行用户范围查询和允许的 stored procedures。
-- `webhook_runtime`：只能读取 connection 验签元数据、写 inbox/outbox。
-- `dispatcher_runtime`：只能 claim outbox 和 job lease。
-- `worker_runtime`：只能执行窄 stored procedures，参数必须含已绑定 tenant/job ID。
-- `migration_runtime`：DDL 权限，无 credential 解密能力。
-- `security_audit_runtime`：append-only 写权限。
-
-### 7.4 跨租户 bootstrap
-
-Webhook、dispatcher 和 worker 在取得 tenant context 前不得直接扫描 tenant 表。数据库提供极窄 `SECURITY DEFINER` procedures：
-
-- `resolve_callback_route(route_keyed_hash)`。
-- `claim_outbox(operation_id)`。
-- `resolve_worker_job(job_id, fencing_token, allowed_operation)`。
-
-这些 procedure 使用 dedicated NOLOGIN owner、固定 `search_path`、无 dynamic SQL、`REVOKE ALL FROM PUBLIC`，输入只接受 opaque hash/ID；原子返回已绑定 tenant/job/operation并在同一事务设置 transaction-local tenant context。调用者提供的 tenant 永不参与授权决定。
-
-## 8. Kie Credential Vault
-
-### 8.1 数据结构
-
-每个用户可有多个 `provider_connections`。每个连接有独立 API Key version 和 HMAC version：
-
-- `provider_connections`：tenant、用户自定义 label、状态、公开 callback locator、active versions、健康和 credits cache。
-- `credential_secret_versions`：secret kind、version、ciphertext、nonce、tag、wrapped DEK、KMS key ID、状态、created/destroyed time。
-- `keyed_fingerprint`：由 credential ingest 通过独立 AWS KMS HMAC key 计算，用于 UI 识别和内部去重，不支持还原 Key，也不需要在环境变量保存 fingerprint pepper。
-
-UI 只显示 label、短 fingerprint、状态、最近验证和轮换时间，不再次显示完整 Key 或真实前后缀。
-
-### 8.2 Envelope encryption
-
-1. Credential broker 为每个 secret version 生成随机 256-bit DEK。
-2. 使用 AES-256-GCM 加密 API Key 或 HMAC Key。
-3. 使用 AWS KMS customer-managed symmetric key 包裹 DEK。
-4. Encryption context/AAD 绑定：
-
-```text
-app, environment, tenant_id, connection_id, provider, secret_kind, version
+```ts
+type LocalPreferences = {
+  schemaVersion: number
+  activeRoomId?: string
+  locale: "zh-CN" | "en"
+  theme: "light"
+  galleryLayout: "grid" | "compact"
+  pollingEnabled: boolean
+}
 ```
 
-5. context 不含邮箱、Key、prompt 或其他敏感文本，因为 AWS CloudTrail 会记录它。
-6. 数据库只保存 ciphertext、nonce、tag 和 wrapped DEK。
+API Key 固定保存到当前 origin 的 `localStorage`，符合浏览器独立和重开恢复要求。设置页提供清除和替换动作；不提供 `sessionStorage` 模式，避免 origin 级队列 leader 无法读取其他标签页的会话 Key。所有同源标签页通过 `storage` 事件获知 Key 已更换，但禁止通过 BroadcastChannel 发送明文 Key。
 
-### 8.3 AWS 身份
+Key 只在设置页输入，其他界面仅显示掩码，例如 `kie_••••••7C2A`。
 
-- Vercel 与 AWS 使用 OIDC federation 获取短期凭据；禁止保存 AWS Access Key。
-- environment、project 和 role 写入 AWS trust policy 条件。
-- production、preview、development 使用不同 AWS account/role/CMK。
+客户端为当前 Key 计算 SHA-256 fingerprint，只用于把任务、参考图和 credits 快照绑定到创建它们的 Key。fingerprint 不能替代 Key，也不发送给 Kie。切换 Key 后，旧任务继续保留，但只有重新提供 fingerprint 匹配的 Key 才能补查。
 
-### 8.4 服务权限分离
+### 4.2 IndexedDB
 
-- Next.js Web/BFF：无 KMS Decrypt；不能读取历史 Key。
-- Credential ingest：接收浏览器直达的新 plaintext、验证、GenerateDataKey/Encrypt；不能解密已有 secret。
-- Credential authorization service：无公网业务入口、无 Kie/媒体 egress；验证 DB operation、lease、fencing token 后，为 exact tenant/connection/kind/version 创建短 TTL、exact encryption-context 的 per-operation KMS grant。
-- Webhook verifier：只能使用 credential authorization service 获取当前 route 所需 HMAC grant，不可选择或解密 API Key。
-- Kie execution service：只能使用已签发的单 operation grant；内部解密后调用固定 Kie endpoint，永不向 caller 返回 API Key。
-- Media worker：无 credential Decrypt 权限。
-- Migration/admin：无业务 credential Decrypt 权限。
+使用 Dexie 管理结构化本地数据。禁止保存图片 Blob、base64 图片或完整上传文件。
 
-KMS-capable identities 只属于 AWS Lambda control-plane execution roles；ECS Fargate media role和 Vercel OIDC 均无 Decrypt，Vercel 最多取得 enqueue/invoke/presign 窄权限，永远不能 AssumeRole 到 Decrypt role。API Key 与 webhook HMAC 使用不同 CMK，KMS policy 强制 app/environment/secret_kind context。Per-operation grant 在完成后 retire，watchdog 撤销泄漏 grant。
+建议表：
 
-Credential authorization service 是密钥系统的最高敏感 root of trust；隔离 account/VPC、无用户入口、最小代码和双人审批。它仍是系统性 blast radius，不能用“encryption context”虚假声称完全消除运行时风险。
+```ts
+type Room = {
+  id: string
+  title: string
+  createdAt: number
+  updatedAt: number
+}
 
-明文只在 credential ingest 或单次 Kie execution 内存中短暂存在，不进入 Next.js runtime、SQS、outbox、service 参数持久层、返回值、日志、trace 或异常。Buffer 使用后 best-effort 清零。
+type Turn = {
+  id: string
+  roomId: string
+  prompt: string
+  mode: "text-to-image" | "image-to-image"
+  model: string
+  parameters: Record<string, unknown>
+  referenceUploadIds: string[]
+  taskIds: string[]
+  createdAt: number
+}
 
-### 8.5 连接向导
+type TaskStatus =
+  | "queued"
+  | "submitting"
+  | "waiting"
+  | "queuing"
+  | "generating"
+  | "success"
+  | "fail"
+  | "stale"
+  | "unknown"
+  | "canceled-local"
 
-1. 用户完成 step-up。
-2. Browser 生成 ephemeral P-256 DPoP key，并向 BFF 申请 `credential_enrollment_intent`。
-3. BFF 校验 session 和 fresh step-up，创建绑定 tenant/user/session/action/DPoP public key、2 分钟有效、一次消费的 opaque capability；数据库只存 capability hash。
-4. Browser 将 Kie API Key、Kie webhook HMAC Key、label、capability 和 DPoP body proof 直接 POST 到隔离 AWS credential-ingest endpoint；精确 CORS 只允许 production app Origin。Next.js runtime 不接触 plaintext。
-5. Credential ingest 原子消费 capability，执行严格长度/格式、多维限流和 DPoP 校验。
-6. Credential ingest 用新 Key 调 `/api/v1/chat/credit` 验证连接，再立即 envelope encrypt。
-7. 响应只返回 connection ID、fingerprint、credits 和时间；capability/DPoP key 立即失效。
-8. 用户应为应用创建专用、低额度 Kie Key，并在 Kie 控制台设置小时/日/总量 cap。
-9. UI 显示 AWS worker NAT EIP 集合；用户可在 Kie 开启 IP allowlist。
+type Task = {
+  localTaskId: string
+  remoteTaskId?: string
+  retryOfLocalTaskId?: string
+  keyFingerprint: string
+  roomId: string
+  turnId: string
+  batchId: string
+  batchIndex: number
+  model: string
+  requestSnapshot: Record<string, unknown>
+  status: TaskStatus
+  failureCode?: string
+  failureMessage?: string
+  creditsConsumed?: number
+  submissionAttemptId?: string
+  leaseOwner?: string
+  leaseUntil?: number
+  fencingToken: number
+  requestStartedAt?: number
+  pollAfter?: number
+  createdAt: number
+  updatedAt: number
+  completedAt?: number
+}
 
-### 8.6 轮换和删除
+type Asset = {
+  id: string
+  localTaskId: string
+  roomId: string
+  url: string
+  outputOrdinal: number
+  availability: "unchecked" | "available" | "load-error" | "unavailable"
+  favorite: boolean
+  tags: string[]
+  collectionIds: string[]
+  width?: number
+  height?: number
+  createdAt: number
+  lastCheckedAt?: number
+}
 
-- API Key 与 HMAC Key 独立版本化，不覆盖历史版本。
-- 新任务只用 active version；旧任务固定原 version。
-- Graceful disable：立即拒绝新任务，旧 secret 在 live 数据中保留到关联任务 terminal 且资产归档完成，然后逻辑删除 live wrapped DEK。
-- Emergency destroy：立即删除 live wrapped DEK；未完成任务标 `orphaned_credentials`，不再调用 Kie，也不信 webhook URL。
-- Kie 外部先撤销导致 401：connection 标 `revoked_external`，任务标 `blocked_auth`。
-- 应用删除 Key 不等于远端撤销；UI 明确要求用户在 Kie 控制台撤销。
-- HMAC verifier 最多尝试 active 和一个未过 grace 的 previous version，禁止遍历全部历史 secret。
-- 删除 live wrapped DEK 不等于立即清除 PITR、逻辑备份或 WORM 副本。Restore pipeline 必须重放 deletion tombstones，备份到期后才物理消失。
-- 每个 tenant 使用独立 KMS KEK；账户永久删除在法定/运营冷却期后安排 KEK deletion，才能实现 tenant 级最终 crypto-erasure。
-
-## 9. Kie 官方能力边界
-
-### 9.1 GPT Image 2 Image-to-Image
-
-```text
-POST https://api.kie.ai/api/v1/jobs/createTask
-model = gpt-image-2-image-to-image
+type ReferenceUpload = {
+  id: string
+  keyFingerprint: string
+  displayName: string
+  mimeType: string
+  size: number
+  temporaryUrl: string
+  status: "ready" | "expiring" | "expired" | "load-error"
+  expiresAt: number
+  createdAt: number
+}
 ```
+
+其他表：`savedPrompts`、`parameterPresets`、`collections`、`accountSnapshots`。
+
+ID 和幂等规则：
+
+- `Turn.taskIds` 只保存 `localTaskId`。
+- `Asset.localTaskId` 只引用本地 Task，不引用 Kie `remoteTaskId`。
+- Asset 建立唯一索引 `[localTaskId+outputOrdinal]`，重复轮询使用事务 upsert，并允许更新同一输出的新临时 URL。
+- `outputOrdinal` 固化首次成功结果数组顺序。后续刷新只有在结果数量和顺序契约一致时才按 ordinal 更新 URL；结构变化进入 contract error，不静默新增或合并卡片。
+- `ReferenceUpload` 和 `accountSnapshots` 同样带 `keyFingerprint`，统计不能混合不同 Key。
+
+### 4.3 数据迁移与导出
+
+- 每次数据库 schema 升级必须提供 Dexie migration。
+- 设置页支持导出 JSON，内容只包含元数据、设置和 URL。
+- 导出默认不包含 API Key，且不得导出图片二进制。
+- 导入前校验 schema、大小、字段和 URL 格式。
+- 支持清空当前浏览器全部数据，并进行二次确认。
+
+## 5. Kie API 集成
+
+基础地址：`https://api.kie.ai`。
+
+### 5.1 任务创建
+
+```http
+POST /api/v1/jobs/createTask
+Authorization: Bearer <KIE_API_KEY>
+Content-Type: application/json
+```
+
+应用的 `/api/kie/tasks` 路由只接受已注册模型的规范化输入，通过模型适配器映射为 Kie payload。客户端不能指定任意上游 URL、任意 HTTP header 或任意 Kie endpoint。
+
+创建限流按 Kie 文档保守实现：账号级最多 20 次请求/10 秒。客户端队列默认并发 3，并采用 token bucket 平滑提交，避免一次 `10x` 瞬间打满额度。
+
+### 5.2 任务查询
+
+```http
+GET /api/v1/jobs/recordInfo?taskId=<TASK_ID>
+Authorization: Bearer <KIE_API_KEY>
+```
+
+官方状态映射：
+
+- `waiting`
+- `queuing`
+- `generating`
+- `success`
+- `fail`
+
+`resultJson` 是字符串。服务端先做 JSON parse，再校验其中的 `resultUrls` 为 `https` URL 数组，最后返回规范化对象。不能直接把上游字符串注入页面。
+
+Kie 没有可信百分比进度，所以 UI 只显示阶段、已等待时间和最后检查时间，不伪造进度条百分比。
+
+### 5.3 Credits
+
+```http
+GET /api/v1/chat/credit
+Authorization: Bearer <KIE_API_KEY>
+```
+
+官方接口只提供剩余 credits 数值。UI 必须把数据来源分开：
+
+- 官方：剩余 credits、连接成功/失败、请求延迟、最后检查时间。
+- 本浏览器计算：活动任务数、今日/7 天/30 天任务数和已知 credits 消耗。
+
+不能声称能显示 Key 创建时间、Key 过期时间、账单、全账号历史、消费上限或其他浏览器任务，除非 Kie 后续提供并验证相应接口。
+
+刷新时机：
+
+- 首次配置 Key。
+- 页面获得焦点。
+- 提交任务后。
+- 批次出现终态后。
+- 页面可见时每 30 秒。
+- 用户点击刷新按钮。
+
+失败时保留上次成功值，并明显标记为过期数据。
+
+### 5.4 GPT Image 2 图生图
+
+模型 ID：`gpt-image-2-image-to-image`。
+
+第一版完整支持：
 
 - `prompt`：必填，最多 20,000 字符。
-- `input_urls`：必填，最多 16 个。
+- `input_urls`：1 至 16 张参考图。
 - 输入格式：JPEG、JPG、PNG、WEBP。
-- 单张输入：最多 30MB。
-- `resolution`：`1K | 2K | 4K`。
+- 单张输入最大 30 MB。
+- `resolution`：`1K`、`2K`、`4K`。
 - `aspect_ratio`：`auto`、`1:1`、`3:2`、`2:3`、`4:3`、`3:4`、`16:9`、`9:16`、`2:1`、`1:2`、`3:1`、`1:3`、`21:9`、`9:21`、`5:4`、`4:5`。
 
-采用更严格的官方描述并集：
+组合约束由适配器和 UI 同时执行：
 
-- `auto` 只允许 1K。
-- `1:1` 不允许 4K。
-- `5:4`、`4:5` 只允许 1K。
-- `3:1`、`1:3`、`9:21` 不允许 2K/4K。
+- `5:4`、`4:5`、`3:1`、`1:3`、`9:21` 不允许 `2K` 或 `4K`。
 
-该模型未公开 `num_images`、seed、mask、strength、quality、output format 或 cancel。生成五张必须创建五个任务。GPT Image 2 未承诺百分比进度，UI 不显示虚假进度。
+不额外禁止 `auto + 2K/4K` 或 `1:1 + 4K`。这是 2026-07-11 当前 Kie Playground 的公开约束；实现时由 contract fixture 固化，若 Kie 更新规则则更新适配器版本。
 
-### 9.2 查询
+文档未提供的参数不得伪装成支持项，包括 `num_images`、`seed`、`mask`、`quality`、输出格式和远端取消。`5x` 是五个独立任务，不是一个任务内请求五张。
 
-```text
-GET https://api.kie.ai/api/v1/jobs/recordInfo?taskId=...
+### 5.5 参考图上传
+
+图生图需要公网 URL，本地文件不能直接放入 `input_urls`。由于本应用不拥有对象存储，参考图通过 Kie File Upload API 转成临时 URL。
+
+流程：
+
+1. 浏览器选择、粘贴或拖入图片。
+2. 客户端校验 MIME、扩展名、magic bytes、数量和大小。
+3. 浏览器以 `credentials: 'omit'`、`redirect: 'error'` 固定直传 `https://kieai.redpandaai.co/api/file-stream-upload`。
+4. `uploadPath` 使用应用固定前缀加随机 ID，`fileName` 使用 `crypto.randomUUID()` 和验证后的扩展名；同时使用 `formData.append('file', file, randomRemoteName)` 覆盖 multipart file part 的 `filename=`，不发送原始路径或原文件名。
+5. 严格校验响应中的实际 MIME、bytes、临时 URL 和过期信息。
+6. 将临时 URL 写入 `ReferenceUpload`，原文件名只作为本地 `displayName`。
+7. 提交任务时只发送 URL。
+8. 不在 IndexedDB 中保存原文件或 Blob。
+
+原因：Vercel Functions 请求体存在约 4.5 MB 限制，而模型允许单图 30 MB。大文件必须浏览器直传 Kie。2026-07-11 已验证该 endpoint 的 OPTIONS 会对任意 origin 返回允许 `POST`、`Authorization` 和 `Content-Type`；上线前仍必须用生产 origin 和测试 Key 完成 multipart 实传，并验证 30 MB 边界。若 contract test 失败，则阻断图生图上线，不引入自有存储，也不虚假声称支持 30 MB。
+
+Kie 上传文档对 24 小时和 3 天存在冲突。优先使用响应 `expiresAt`；没有该字段时按最短 24 小时计算。临近过期或已经过期的参考图禁止提交，用户必须重新选择。随机远端文件名避免 Kie 的同名覆盖行为。
+
+### 5.6 下载
+
+应用优先调用 Kie `/api/v1/common/download-url` 为 Kie 生成的 URL 获取临时直链。该直链按文档约 20 分钟有效。
+
+下载策略：
+
+1. 单图点击下载图标，打开或保存临时直链。
+2. Kie 或图片域名允许 CORS 时，支持浏览器端 ZIP 批量打包。
+3. CORS 不允许读取 Blob 时，禁用 ZIP，并保留逐张下载和浏览器右键保存。
+
+应用不会把下载文件静默写入磁盘，也不会在服务端中转并保存文件。
+
+## 6. 模型适配器
+
+每个模型通过注册表描述能力，不使用一个巨型动态表单：
+
+```ts
+type ModelAdapter = {
+  id: string
+  label: string
+  modes: Array<"text-to-image" | "image-to-image">
+  schema: unknown
+  defaults: Record<string, unknown>
+  normalizeInput(input: unknown): NormalizedTaskInput
+  toKiePayload(input: NormalizedTaskInput): Record<string, unknown>
+  parseResult(payload: unknown): NormalizedTaskResult
+}
 ```
 
-- 状态：`waiting | queuing | generating | success | fail`。
-- `resultJson` 是 JSON 字符串，通常含 `resultUrls`。
-- 可含 `creditsConsumed`、时间和错误。
-- 查询建议 2-5 秒；每 Key 每秒最多 10 次。
-- 任务创建默认每账户每 10 秒最多 20 次。
+首发必须支持：
 
-### 9.3 Webhook HMAC
+- GPT Image 2 text-to-image。
+- GPT Image 2 image-to-image。
+
+架构预留并按官方文档逐个接入：
+
+- Nano Banana 2。
+- Seedream 5 Lite / Pro 的 text-to-image 和 image-to-image。
+- Flux 2 Pro 的 text-to-image 和 image-to-image。
+- Grok Imagine 的 text-to-image 和 image-to-image。
+
+未完成 schema、参数联动和结果解析验证的模型不能出现在生产模型选择器中。高级 JSON 仅允许覆盖当前适配器白名单内的字段，不能绕过模型和 endpoint 白名单。
+
+## 7. 批量任务与恢复
+
+### 7.1 `5x` 语义
+
+用户选择数量 `N` 后：
+
+1. 创建一个 `batchId`。
+2. 固化 prompt、模型、参考 URL 和参数快照。
+3. 在 IndexedDB 预写 `N` 条 `queued` 任务。
+4. leader 在 Dexie 事务内写入新的 `submissionAttemptId`、`leaseOwner`、`leaseUntil`、递增 `fencingToken`、`requestStartedAt` 并把状态改为 `submitting`，然后才发送请求。
+5. 每条收到 `remoteTaskId` 后，只能在 `submissionAttemptId` 匹配且 `remoteTaskId` 仍为空时条件写入，再释放提交 lease；迟到响应只能绑定原 attempt。
+6. 每条成功、失败、未知互不影响。
+7. 只有 N 条均取得并持久化 `remoteTaskId` 后才显示“5x 已提交”；此前显示“正在提交 3/5”。
+8. UI 汇总 `成功 3 / 生成中 1 / 失败 1`。
+
+数量控件范围默认 1 至 10，并提供 `1x`、`2x`、`4x`、`5x` 快捷项。
+
+### 7.2 状态机
 
 ```text
-base64(HMAC-SHA256(taskId + "." + timestamp, webhookHmacKey))
+queued
+  -> submitting
+      -> waiting -> queuing -> generating -> success
+      -> fail
+      -> unknown
+
+queued -> canceled-local
 ```
 
-- timestamp 来自 `X-Webhook-Timestamp`。
-- signature 来自 `X-Webhook-Signature`。
-- HMAC 不覆盖 state、result URL 或 callback locator。
-- Webhook 只能唤醒；worker 必须使用该任务固定的 API Key version 调 `recordInfo`。
+- `canceled-local` 只取消尚未提交的本地任务。
+- 已提交任务停止轮询不等于取消 Kie 远端任务。
+- 创建请求出现歧义超时时进入 `unknown`，不自动重提。
+- Query 临时失败不直接标记任务失败，而是保留状态并退避。
+- stale `submitting` 且没有 `remoteTaskId` 的任务进入 `unknown`，绝不自动重提。
+- 对 `unknown` 的手动重试始终新建 `localTaskId`，通过 `retryOfLocalTaskId` 关联原任务；原 Task、attempt 和迟到响应保持不可变，绝不复用原 Task 发第二次 POST。
 
-### 9.4 Credits 与 Key 信息
+### 7.3 轮询
 
-Kie 公开 API 可获取：
+- 成功创建后约 2 秒首次查询。
+- 生成中逐步退避，最长 15 秒。
+- 页面隐藏后降低频率。
+- Kie 查询总速率保持在 10 req/s 以下。
+- 页面重新可见后立即补查到期任务。
+- 终态后停止轮询并刷新 credits。
+- 单个任务活动轮询约 15 分钟后进入 `stale` 并停止高频查询；页面聚焦、应用重开或用户手动刷新时仍可补查，`stale` 不等于生成失败。
 
-- `/api/v1/chat/credit` 的当前剩余 credits。
-- 已知 task 的状态、错误、时间和 `creditsConsumed`。
+### 7.4 重开恢复
 
-Kie 未公开 API 获取：
+启动时由 leader 扫描 `queued`、`submitting`、`waiting`、`queuing`、`generating`、`stale` 和可恢复的 `unknown` 任务：
 
-- Key 名称、ID、创建时间、过期时间。
-- 小时/每日/总量 cap 和剩余 cap。
-- Key 列表、轮换、撤销、完整账单和全部历史任务。
+- `queued` 且当前 Key fingerprint 匹配：重新进入提交队列，可安全继续尚未开始的 `5x`；不匹配则暂停并提示换回原 Key。
+- `submitting` 且没有 `remoteTaskId`：转为 `unknown`，不自动提交。
+- 有 `remoteTaskId` 且当前 Key fingerprint 匹配：重新查询 Kie。
+- Key 缺失或 fingerprint 不匹配：暂停并提示用户重新提供匹配 Key，不误报任务不存在。
+- `unknown` 且无 `remoteTaskId`：保留未知状态，允许用户手动标记已放弃。
+- 查询成功：更新任务并提取 URL 到图库。
+- 上游已无记录：显示“无法从 Kie 恢复”，不删除本地 prompt。
 
-UI 只展示官方余额、采样时间和本应用聚合统计，不伪造不可查字段。
+## 8. 房间与 prompt 行为
 
-### 9.5 临时 URL
+- 新建房间后 composer 必须为空。
+- 不自动复制上一房间 prompt、负面词、参考图或参数。
+- 不显示“继承描述词”“延续上下文”等隐藏行为。
+- 每个用户 prompt 和任务卡片提供复制图标。
+- 复制后只写系统剪贴板，并显示短暂 toast。
+- “基于此结果再生成”会明确把 prompt 和参数填入当前 composer，用户确认后才提交。
+- 房间支持新建、重命名、删除和搜索。
+- 含活动任务的房间只允许软删除并移入“最近删除”，其 Task、Key fingerprint 和 `remoteTaskId` 保留到终态；没有活动任务时才允许永久删除本地元数据。删除不影响 Kie 已提交任务。
 
-Kie 文档对结果保留存在 24 小时与 14 天两种描述。系统按最短窗口处理：终态后立即归档到 S3；UI 永远不直接依赖 Kie URL。
+## 9. 图库
 
-## 10. Durable 任务架构
+图库是 URL 索引，不是图片仓库。
 
-### 10.1 接受请求
+### 9.1 卡片内容
 
-1. 用户提交 generation request，并提供 tenant-scoped `Idempotency-Key`。
-2. 服务端验证 Auth0 session、tenant、connection、模型 schema、输入 Asset、quota、rate 和 kill switch。
-3. 同一 Postgres 事务创建 Turn、Batch、N 个 queued Job、credit/storage reservation 和一条 scheduler-wakeup outbox；此时不直接产生 submit SQS message。
-4. 唯一 `(tenant_id, Idempotency-Key)` 保证 100 次重放只创建一个 Batch。
-5. 事务提交后返回 202；此时浏览器可安全关闭。
+- 直接使用 Kie URL 渲染缩略图。
+- 显示模型、尺寸、房间、生成时间、任务状态。
+- 收藏、标签和本地集合。
+- 预览、复制 prompt、复制 URL、重新生成、刷新任务、下载。
+- 任何操作都不得把图片 Blob 写入 IndexedDB。
 
-### 10.2 Transactional outbox
+### 9.2 URL 失效
 
-- API 只在 Job 与 scheduler-wakeup outbox 同时提交后返回成功。
-- 请求尾部 best-effort 唤醒 dispatcher。
-- AWS EventBridge 每分钟启动 outbox dispatcher，恢复“DB 已提交但投递前崩溃”的窗口。
-- Dispatcher 使用原子 claim、短 lease、fencing token 和 `FOR UPDATE SKIP LOCKED` 或等价机制。
-- Outbox 只含 tenant/job/connection/version 等 ID，不含 Key、HMAC、prompt、signed URL 或 output URL。
-- DB scheduler 按 tenant 公平和 priority 原子 claim eligible Job，重新检查 pause/cancel/kill switch 后，才在同一事务写 submit outbox。
-- SQS message 只含 Job ID 和 operation ID。
+`img` 触发 `error` 时：
 
-### 10.3 SQS 与 worker
+1. 将本地 `availability` 标记为 `load-error`，文案为“暂时无法加载”，不能仅凭浏览器错误断定 URL 已过期。
+2. 卡片显示稳定占位，不发生布局跳动，并提供重试。
+3. 保留 prompt、模型、参数、taskId 和原 URL。
+4. 提供“刷新任务”动作，再次查询 Kie。
+5. 只有 Kie 权威查询或 download-url 接口明确确认不可用时，才标记 `unavailable`。
 
-- 使用 AWS SQS FIFO queues 和 DLQ；message group 按 connection/job 分组。
-- 队列至少分为 submit、reconcile、archive、account-refresh、asset-export。
-- Consumer 按 at-least-once 设计；每一步先 CAS 状态和 fencing token。
-- Submit consumer 在任何网络调用前提交 one-shot ProviderAttempt 状态 `prepared -> create_started`；只有持有有效 fencing token 的 attempt 可进入 `create_started`。
-- 一旦 `create_started` 提交，任何 worker crash、lease 失效、响应丢失或 DB commit 失败都使 attempt 进入 `submission_uncertain`，绝不自动再次 POST。
-- Kie execution service 通过 credential authorization service 的 per-operation KMS grant 使用 Job 固定 credential version，内部调用 Kie，永不返回 Key。
-- `429` 明确未入队，可安全退避重试。
-- timeout、connection reset 和不明确 `5xx` 标 `submission_uncertain`，禁止自动再次 create，避免重复扣费。
-- `retry-generation` 等任何可能产生新 Kie 费用的 mutation 都要求新的 tenant-scoped Idempotency-Key，并明确创建新的 ProviderAttempt/成本风险。
+应用不定时探测所有图片 URL，以免产生大量跨域请求。只在可视渲染、用户刷新或任务补查时更新可用状态。
 
-### 10.4 分布式限流与资源授权
+### 9.3 筛选
 
-每次提交原子检查：
+- 房间。
+- 模型。
+- 日期。
+- 可用/暂时加载失败/不可用。
+- 收藏。
+- 标签和集合。
+- prompt 文本搜索。
 
-- user/tenant/connection/IP/设备速率。
-- user 和 connection 活动并发。
-- Kie 创建 18/10s 安全桶。
-- Kie query 低于 10/s。
-- 每批任务数、Batch Matrix 总任务数。
-- 每日上传字节、永久存储、导出和 SSE/轮询额度。
-- 用户设定的本应用 credits 日/月预算。
+## 10. UI 规格
 
-限流存储故障时生成 fail closed；只读历史可降级。
+视觉方向：shadcn/ui 白色工作台，安静、紧凑、适合重复操作。
 
-Kie 没有公开 account ID，多个 connection 可能属于同一 Kie account。首发对同一 tenant 的全部 Kie connection 共享一个保守的创建/query safety bucket；不把 connection 错当独立账户，也不允许用户声明分组来放宽官方账户级限制。
+- 白色主背景，灰色分隔，黑色正文，状态色只用于反馈。
+- 不使用渐变、装饰球或营销式 hero。
+- 卡片圆角不超过 8px。
+- 使用 Lucide 图标，图标按钮有 tooltip 和可访问名称。
+- 不用文字胶囊替代熟悉的复制、下载、刷新、删除等图标。
+- 固定工具条、缩略图和队列项尺寸，动态状态不得引发布局跳动。
 
-### 10.5 暂停和取消
-
-- Scheduler 支持优先级和公平队列。
-- 尚未 claim/提交的 Job 可暂停、继续和取消。
-- 取得 provider taskId 后，若模型无 cancel API，只能隐藏/静音；服务端仍必须补查和归档。
-- 全局、tenant、user、connection 四级 kill switch 在 DB 中控制，1 分钟内生效，不依赖重新部署。
-
-## 11. 多租户 Webhook
-
-### 11.1 Callback locator
-
-- Submit worker 在调用 Kie 前生成 192-bit opaque `callback_route_id`，先提交 keyed route hash 与 Job 绑定，再把 plaintext route 仅放入本次 Kie create request。
-- Callback：`https://hooks.example.com/api/webhooks/kie/v1/{route}`。
-- Submit/webhook 服务通过独立 AWS KMS HMAC key 计算 route keyed hash；DB 和 tombstone 只存 hash，不存 plaintext。route hash 先落库再提交 Kie，解决 callback 早于 create response。
-- route 是高熵定位符，不是认证 secret；真正认证仍是 connection 的 Kie HMAC。
-- route 不含 tenant/user/connection 可读信息；API Gateway access log format、AWS WAF sampled request 和应用日志都必须省略/脱敏 URI path。
-
-### 11.2 验签
-
-1. API Gateway/AWS WAF 执行 IP/route rate limit 和 64KB body limit。
-2. Lambda 严格验证 Content-Type、JSON、taskId 长度/字符和 header 唯一性。
-3. timestamp 必须是十进制 Unix 秒，允许窗口正负 300 秒。
-4. Base64 严格解码后必须 32 bytes。
-5. 用 route 找到候选 connection 和 active/previous HMAC version。
-6. Webhook role 只解密 HMAC secret，常量时间比较等长 digest。
-7. 相同 `(connection_id, taskId, timestamp)` 为同一事件；signature/payload digest 仅用于诊断。
-8. 完全相同的已接收重放即使过时也返回 200 no-op，减少 provider 重试；新伪造请求拒绝。
-
-### 11.3 可信边界
-
-- Callback 不能创建 Job、选择 tenant、选择 credential 或提供可抓取 URL。
-- 除 taskId 外的 callback body 字段全部忽略。
-- 验签后写 inbox + outbox，p95 目标低于 500ms，然后返回 200。
-- Worker 用固定 API key version 查询 `recordInfo`。
-- `recordInfo.taskId` 与 create response、connection 必须一致；`recordInfo.param.callBackUrl` 的 route keyed hash 也必须匹配。若上游未返回 param，则等待 create response 绑定，不能弱化校验。
-
-### 11.4 早到、重复和乱序
-
-- 早到 callback 先写 signed claim；create response 返回后用 partial unique `(connection_id, provider_task_id)` CAS 绑定。
-- create response 与 callback taskId 不一致时不自动选择任何一方。
-- 重复回调只产生一个 authoritative query 和一个 Asset。
-- terminal 状态单调，迟到 fail 不覆盖 success/archived。
-- 已删除 route 保留无 tenant 信息的 tombstone，late callback 返回 200 并丢弃。
-
-### 11.5 HMAC 激活门槛
-
-- 公开首发强制配置并验证 HMAC；缺少 HMAC 的 connection 保持 `incomplete`，不能提交生成。
-- Durable polling 始终作为已激活 connection 的漏回调补偿，不是绕过 HMAC 设置的替代模式。
-- Callback locator 不能替代官方 HMAC，也不能授权结果抓取。
-
-## 12. 补查和浏览器关闭
-
-- Submit worker 成功保存 taskId 后安排 reconcile。
-- Webhook 为主，durable polling 为补偿。
-- 前 15 分钟按 Kie 建议退避查询。
-- 之后在 30 分钟、2 小时、6 小时和 23 小时低频补查。
-- 任意时刻收到可信 callback 会立即唤醒。
-- 浏览器是否打开不参与任务生命周期。
-- Worker/函数/部署重启不丢状态；DB 是事实源，SQS 是执行器。
-- DLQ、卡住 lease 和 stale Job 由 watchdog 告警并支持安全重放。
-
-## 13. 资产安全与永久归档
-
-### 13.1 存储
-
-- 使用 private Amazon S3。
-- 开启 Block Public Access、versioning、SSE-KMS、bucket policy 最小权限。
-- Object key 只由服务端生成：`tenants/{tenantId}/assets/{assetId}/{variant}`。
-- 用户输入不能成为 object key 或任意 path。
-- 每个对象记录 checksum、bytes、magic MIME、尺寸、owner 和状态。
-
-### 13.2 上传
-
-1. Browser 只提交文件名、声明 MIME、bytes 和目标模型。
-2. BFF 从 session 推导 tenant，原子预留 storage quota，预分配 quarantine Asset；无 reservation 不签 URL。
-3. 服务端签发 exact key 的 S3 presigned POST policy，包含 `content-length-range`、允许 MIME、SSE-KMS、短 TTL 和禁止覆盖条件；不使用无法可靠限制大小的普通 presigned PUT。
-4. Browser 直接 POST 到 S3，绕过 Vercel Function payload 限制。
-5. Finalize 只接受 Asset ID；服务端从 DB 取 key 后执行 HEAD、ETag、实际字节、magic bytes、完整解码、像素/帧上限。
-6. 只允许 JPEG/PNG/WebP；拒绝 SVG/GIF、polyglot、截断和解码失败。
-7. 隔离 media worker 生成去 EXIF 的安全预览 derivative；原图保持 private，不能 inline 执行。
-8. 未 finalize/失败/过期 upload intent 释放 quota reservation 并在 24 小时内清理对象；若未来启用 multipart，必须同时 abort incomplete multipart。
-
-### 13.3 Kie 输入
-
-- Job 保存输入 Asset ID 和顺序，不保存浏览器 URL。
-- Kie caller 在 create 前为 exact S3 object 生成 GET-only presigned URL。
-- URL TTL 足够 Kie 读取但尽量短；URL 不进入 DB、SQS、日志或 trace。
-
-### 13.4 输出抓取与 SSRF
-
-Archive queue 和 outbox 只传 Job ID。Kie execution service 使用 per-operation grant 调 `recordInfo`，清零 API Key 后，将 result URL 通过 private VPC mTLS 的单次内存请求交给 Media Fetch Fargate；URL 不写 DB/SQS/log。Media service 归档到 quarantine S3，只返回 Asset ID/checksum/metadata。失败重试重新按 Job ID 调 `recordInfo`，不保存 URL。
-
-Kie execution service egress 只允许 `api.kie.ai`；Media Fetch Fargate 无 KMS credential Decrypt 权限，所有外部访问强制经过受控 egress proxy。即使 URL 来自 Kie `recordInfo`，仍视为不可信：
-
-- 只允许 HTTPS、443、无 userinfo。
-- 每个模型适配器维护精确 CDN hostname；禁止 wildcard/suffix。
-- 自定义 resolver/HTTP agent 验证完整 CNAME 链并拒绝 loopback、private、link-local、metadata、reserved、multicast、IPv6 特殊和 IPv4-mapped 地址。
-- 实际 socket 连接固定到已验证公共 IP，同时保留原 hostname 做 TLS SNI、证书和 Host 校验；禁止普通 `fetch(hostname)` 二次解析造成 DNS rebinding。
-- `redirect: manual`，最多两跳，每跳重新校验 scheme/host/port/DNS/IP。
-- 禁用代理环境变量和自动解压；抓取请求不携带 Kie Authorization、cookie、S3 token 或其他 credential。
-- 连接、总时长、Content-Length、实际流 bytes、解码像素和帧数均有硬上限。
-- 默认单图 64MB、100MP；模型适配器只能收紧，放宽必须安全评审。
-- magic MIME 与 adapter allowlist 不符时进入 quarantine。
-
-### 13.5 幂等归档
-
-- 权威 success 后 upsert pending Asset，再抓取。
-- S3 key 和 `(tenant_id, job_id, output_ordinal)` 唯一。
-- 上传成功但 DB commit 失败时，retry HEAD/checksum 后 finalize，不重复对象。
-- Kie 完整 URL 不持久化；失败重试重新调用 `recordInfo`。
-- generation 和 archive 分开状态，Kie success + S3 fail 显示“生成成功，保存失败”。
-
-### 13.6 查看、下载和删除
-
-- View/download API 只接受 Asset ID，服务端经 RLS/所有权查 S3 key。
-- Inline view 只签已经完整解码、去 EXIF、重编码的安全 derivative；原图只能以 `Content-Disposition: attachment` 和安全 `Content-Type` 下载。
-- 签发 exact key、GET-only、最长 5 分钟 URL；S3 response headers 也固定 disposition/type/no-store，不能只给 BFF JSON 加 header。
-- 响应设置 `Cache-Control: private, no-store`、`Referrer-Policy: no-referrer`。
-- 403/过期最多自动重签一次。
-- 删除先进入 30 天 Trash；永久删除需 step-up。
-- 被谱系引用的 Asset 保留关系 tombstone，不能造成跨租户引用。
-
-## 14. 数据模型
-
-核心表：
-
-- `users`：Auth0 subject 映射、状态和安全冷却。
-- `tenants`、`tenant_memberships`：首发一对一 owner 关系和 RLS 边界。
-- `provider_connections`：tenant、label、state、callback public data、credits cache。
-- `credential_secret_versions`：envelope ciphertext 和生命周期。
-- `rooms`：tenant、标题、状态、时间。
-- `turns`：prompt、模型、参数快照、输入顺序。
-- `generation_batches`：idempotency key、数量、汇总状态。
-- `generation_jobs`：双状态、固定 connection/API key version、callback keyed hash。
-- `provider_attempts`：每次 create、provider taskId、时间、error、credits。
-- `webhook_inbox`：keyed route hash、taskId、provider timestamp、signature/payload digest、verdict；语义唯一键不含 digest，不存 raw body/signature。
-- `outbox_events`：ID-only payload、lease、fencing token、attempt、available time。
-- `assets`：tenant、job、S3 key、checksum、bytes、MIME、尺寸、archive state。
-- `asset_relations`：input/output/parent/child/order。
-- `tags`、`asset_tags`、`collections`。
-- `saved_prompts`、`parameter_presets`。
-- `credit_snapshots`：connection、official balance、latency、observed time、error class。
-- `rate_limit_buckets`、`quota_reservations`、`kill_switches`。
-- `security_audit_events`：append-only 安全事件，不含敏感值。
-- `callback_tombstones`：删除后处理 late callback 的无 PII locator hash。
-- `deletion_tombstones`：credential/asset/account 删除序列，restore 后优先重放，防备份数据复活。
-
-关键约束：
-
-1. 所有业务关系使用 tenant composite FK。
-2. `(tenant_id, client_idempotency_key)` 唯一。
-3. `(connection_id, provider_task_id)` partial unique。
-4. `(tenant_id, job_id, output_ordinal)` Asset 唯一。
-5. Outbox dedupe key 唯一。
-6. Webhook replay key 唯一。
-7. Job 固定 credential version，不随 active version 改变。
-8. 终态不可回退。
-9. 新 Room 不复制旧 prompt 或参数。
-10. 临时 URL、secret、token 不进入业务表。
-
-双状态机：
+### 10.1 桌面布局
 
 ```text
-generation:
-queued -> submitting -> waiting -> generating -> succeeded | failed | uncertain | blocked_auth
-
-archive:
-not_ready -> pending -> ingesting -> ready | failed | quarantined
+┌──────────────────────────────────────────────────────────┐
+│ Model       Credits       Queue        Gallery   Settings│
+├──────────────┬───────────────────────────────────────────┤
+│ Rooms        │ Room timeline                             │
+│ Search       │ Prompt / batch / result groups            │
+│ + New        │                                           │
+│              │                                           │
+│              ├───────────────────────────────────────────┤
+│              │ Sticky composer                           │
+└──────────────┴───────────────────────────────────────────┘
 ```
 
-## 15. Credits 与近实时状态
+左栏：房间搜索、新建、重命名、删除。
 
-### 15.1 数据来源
+顶栏：模型、官方 credits、连接状态、任务抽屉、图库、设置。
 
-- 官方：Kie `/chat/credit` 当前余额和采样时间。
-- 官方任务：已知 task 的 `creditsConsumed`、状态和耗时。
-- 本应用统计：今日/7 日/30 日任务、消费、成功率、模型分布、归档和存储。
+主区：按 turn 分组显示 prompt 和批量结果。
 
-所有字段标记“官方”或“本应用统计”。余额超过 60 秒未更新显示 stale，不把错误显示成 0。
+底部：sticky composer。
 
-每个 connection 都可单独调用 credit API，但多个 Key 可能返回同一 Kie account 余额。UI 称其为“该 credential 查询到的账户余额”，不声称各 connection 拥有相互独立的 credits。
+### 10.2 Composer
 
-### 15.2 刷新
+- 多行 prompt 输入。
+- text-to-image / image-to-image segmented control。
+- 参考图拖放、粘贴、排序、删除。
+- 模型参数面板。
+- 数量 stepper 和快捷 `5x`。
+- 预估任务数，不伪造价格。
+- 提交、停止本地队列。
+- 校验错误显示在对应控件附近。
 
-- 打开、聚焦、提交、terminal 后触发 account-refresh SQS。
-- 每个 connection 使用 Postgres single-flight 和 15 秒最短 TTL。
-- 并发标签页/请求合并为一个 Kie 上游请求。
-- 401 标 revoked_external；429/5xx 保留旧余额、时间和 stale/error，不覆盖成 0。
+### 10.3 移动端
 
-### 15.3 UI
+- 房间栏和任务队列改为 drawer。
+- Composer 保持底部可达，但展开参数时不得遮挡提交按钮。
+- 图库使用 2 列或单列自适应网格。
+- 触控目标至少 44px。
+- 320px 宽度下不得横向溢出或文字覆盖。
 
-顶栏：
+## 11. 安全边界
 
-- 当前 connection label/fingerprint。
-- 官方 credits。
-- last checked/stale。
-- active/failed/archive backlog。
+本架构不能称为“交易所级安全”。浏览器保存 Key 的根本风险必须明确：同源 XSS、恶意浏览器扩展、被控制的设备或用户主动粘贴恶意脚本都可能读取 Key。
 
-账户中心：
+在无登录、无服务端 Key 托管前提下，采取以下最高可行措施：
 
-- Connection 状态、fingerprint、最后验证/轮换、延迟和最近错误。
-- 官方 credits。
-- 本应用消费和模型统计。
-- Webhook/HMAC、poll fallback、DLQ 和 archive 健康。
-- 存储 bytes、Asset 数和 quota。
-- 专用 Kie Key cap/IP allowlist 配置状态由用户确认，不伪称 API 可读取。
+### 11.1 前端
 
-### 15.4 传输
+- 不加载第三方统计、广告、聊天组件或远程脚本。
+- 生产 CSP 基线：`default-src 'none'`；nonce-based `script-src` 且禁止 `unsafe-inline`/`unsafe-eval`；`style-src 'self' 'unsafe-inline'`；`object-src 'none'`；`base-uri 'none'`；`frame-ancestors 'none'`；`form-action 'self'`；`font-src 'self'`；`connect-src` 只允许 self、精确 Kie upload host，以及 contract test 验证过的精确 result/download host；`img-src` 只允许 self、data、blob 和同一套已验证的 Kie 结果 host。
+- 全站设置 `Referrer-Policy: no-referrer`、`X-Content-Type-Options: nosniff`；跨域图片使用 `referrerPolicy="no-referrer"`。
+- 不使用 `dangerouslySetInnerHTML` 渲染 prompt、错误或上游数据。
+- 只把图片 URL 放入受控的 `<img src>`，不生成可执行 HTML。
+- 依赖保持最少，安装后执行 audit，并固定 lockfile。
+- Key 输入禁用自动完成，复制和显示必须由用户主动操作。
+- 默认掩码，短时显示后自动隐藏。
+- 导出、错误报告和 debug 信息永不包含 Key。
+- 完全不注册 Service Worker，避免其截获带 Authorization 的同源请求。
 
-- 活动页面使用 tenant-authenticated SSE 或 2 秒轮询降级读取 DB 事件。
-- Credits 不是 Kie 流式推送，只能描述为“近实时采样”。
-- SSE 按 user/tenant quota，慢客户端断开重连，不允许无限连接耗费。
+### 11.2 无状态代理
 
-## 16. 模型与复杂功能
+- 请求体和响应体使用 Zod 严格校验并限制大小。
+- 模型 ID、endpoint、参数字段全部 allowlist。
+- 拒绝任意 URL 转发，避免 SSRF/open proxy。
+- `Origin` 只与部署配置中的 canonical HTTPS origin 精确匹配，不能从 `Host` 推导；缺失、`null` 或重复 Origin 对 Key routes 一律拒绝。代理不返回跨域 ACAO，也不启用 credentialed CORS。Origin 只防浏览器跨站调用，不是用户认证。
+- 上游 fetch 固定 scheme、host、path，设置 `redirect: 'error'`、`cache: 'no-store'`、硬 timeout 和响应字节上限。只重建允许的 `Authorization`、`Content-Type` header，不透传浏览器 headers。
+- Authorization 只接受单个、长度受限、字符集合法的 `Bearer` 值。
+- Key routes 使用 `dynamic = 'force-dynamic'`、`revalidate = 0`。成功和错误响应均设置 `Cache-Control: private, no-store, max-age=0`、`CDN-Cache-Control: no-store`、`Vercel-CDN-Cache-Control: no-store` 和 `Pragma: no-cache`。
+- 不记录 Authorization、prompt、参考 URL 或完整上游 body。
+- 给代理设置请求超时和响应大小限制。
+- 错误响应只返回稳定错误码和安全消息。
+- Vercel WAF 对 Key routes 设置 IP/route 速率限制和请求体上限，控制公开代理的 hosting-cost DoS；这不引入账号或数据库。
 
-### 16.1 注册表
+### 11.3 Key 使用限制
 
-每个 adapter 定义：
+- Key 仅在单次请求内存中存在于服务端。
+- 不写 Cookie、数据库、日志、监控属性或 Vercel 环境变量。
+- 生产日志必须通过测试确认没有 header/body 泄漏。
+- 若 Kie 支持 Key 额度上限、IP 限制或轮换，应由用户在 Kie 控制台配置。
+- Vercel 出站 IP 可能变化；使用 Kie IP allowlist 前必须单独解决固定出口。
 
-- Kie model ID、模式、输出类型。
-- Zod schema、默认值、跨字段约束。
-- UI 字段、比例、分辨率、输入数量、MIME/大小。
-- request builder、record parser、error mapper。
-- callback/cancel/native batch/progress 能力。
-- 精确 output CDN host/MIME allowlist。
-- 官方文档链接和核对日期。
+### 11.4 仍然存在的风险
 
-### 16.2 首发 adapter
+- localStorage Key 可被同源 XSS 和扩展读取。
+- 没有登录意味着拿到设备的人可看到本地 prompt 和 URL。
+- 浏览器数据损坏或清除会永久丢失工作区。
+- Kie URL 的访问控制和保留期限不由本应用控制。
+- 客户端限流可以被绕过，最终额度保护依赖 Kie 账号本身。
+- Vercel 代理无法阻止已泄漏 Key 被攻击者从其他客户端直接使用。
+- Kie 官方建议 API Key 不出现在前端；本产品因用户明确选择浏览器本地 Key 而接受这一冲突，所以不能承诺服务端托管 Key 的安全等级。
 
-1. GPT Image 2 Text-to-Image。
-2. GPT Image 2 Image-to-Image。
-3. Nano Banana 2。
-4. Seedream 5 Lite Text-to-Image。
-5. Seedream 5 Lite Image-to-Image。
-6. Seedream 5 Pro Text-to-Image。
-7. Seedream 5 Pro Image-to-Image。
-8. Flux 2 Pro Text-to-Image。
-9. Flux 2 Pro Image-to-Image。
-10. Grok Imagine Text-to-Image。
-11. Grok Imagine Image-to-Image。
+设置页必须以简短文字展示这些事实，不能用“绝对安全”描述产品。
 
-每个首发 adapter 必须有 schema、request fixture、success/fail fixture、callback 声明、UI 表单和 E2E mock。Advanced JSON 也只能使用注册表中的 image model，不能透传任意 model ID。
+## 12. Next.js 路由
 
-### 16.3 房间与 prompt
-
-- 新建、搜索、重命名、归档、Trash。
-- 新房间严格空白。
-- Copy 图标只复制可见 prompt。
-- 每个 Turn 保存最终 prompt、参数、input Asset IDs 和顺序。
-- Prompt template、parameter preset 和参考图组必须显式选择。
-- Batch Matrix 在提交前展示全部最终请求，不允许隐藏拼接。
-
-### 16.4 GPT Image 2 图生图编辑器
-
-- 最多 16 张参考图。
-- 拖拽排序、替换、删除、全屏查看和来源跳转。
-- 显示序号、MIME、尺寸、bytes、扫描状态。
-- 比例/分辨率联动禁用非法组合。
-- 输入可来自安全上传、本人 Asset 库或旧输出。
-
-### 16.5 批量
-
-- 数量 `1-10`，快捷 `1x/2x/4x/5x/8x/10x`。
-- 多 prompt 列表和参数扫描。
-- 提交前显示 Job 总数、连接、预计资源和用户预算状态。
-- 同一 Batch 独立结果槽、部分失败、单项重试、archive 重试。
-
-### 16.6 资产库
-
-- 搜索 prompt、label、模型、tag。
-- 按类型、房间、模型、日期、收藏、generation/archive 状态筛选。
-- 网格/列表、全屏预览、缩放、比较。
-- 收藏、标签、集合、批量选择、Trash、导出。
-- 显示安全元数据、taskId、credits、耗时、checksum、谱系。
-- “作为参考图”是显式操作。
-
-## 17. UI 设计
-
-- shadcn/ui 白色主题，中性灰、近黑正文、有限语义色。
-- 不使用渐变、营销 Hero、装饰色块、嵌套卡片和夸张圆角。
-- 卡片最大 8px 圆角；Lucide 图标 + Tooltip。
-- 左栏约 264px：房间和资产入口。
-- 顶栏：connection、credits、活动 Job、安全/账户状态。
-- 主区：对话式 Turn、稳定图片网格。
-- 底部：粘性 Composer。
-- 右侧 Sheet：Job、Asset、Connection、安全中心。
-- 手机使用 Drawer/Sheet，320px 无水平溢出。
-- 生成和归档分开显示，不显示 GPT Image 2 虚假百分比。
-- 所有操作可键盘访问、焦点恢复、ARIA live、200% zoom、44px touch target、reduced motion。
-
-## 18. API 边界
-
-主要 BFF API：
+建议路由：
 
 ```text
-GET/PATCH/DELETE /api/connections/...
-POST /api/connections/enrollment-intent
-GET/POST/PATCH/DELETE /api/rooms/...
-POST /api/generations
-GET  /api/jobs/:id
-POST /api/jobs/:id/retry-generation
-POST /api/jobs/:id/retry-archive
-POST /api/jobs/:id/reconcile
-POST /api/assets/upload-intent
-POST /api/assets/:id/finalize
-POST /api/assets/view-urls
-GET  /api/assets/:id/download-url
-POST /api/exports
-GET  /api/account/status
-POST /api/account/refresh
-GET  /api/events
+POST /api/kie/tasks
+POST /api/kie/task-status
+POST /api/kie/credits
+POST /api/kie/download-url
+GET  /api/health
 ```
 
-Credential plaintext 只进入独立 AWS endpoint：
+所有携带 Key 的浏览器到应用请求统一使用 `POST` 和 `application/json`，确保浏览器提供可校验的 `Origin`，并避免 taskId 出现在代理访问日志 URL 中。代理再把 task-status 和 credits 映射为 Kie 上游的 `GET`。请求通过 `Authorization: Bearer <key>` 从浏览器传入，服务端不建立 session。`/api/health` 不接收 Key。
 
-```text
-POST https://credentials.example.com/v1/connections
-```
+参考图上传由浏览器直达固定 Kie 上传接口，不增加应用自己的持久化 route。直传 fetch 禁止 redirect 和 cookies，FormData 字段固定，响应按独立 schema 校验。只有 fingerprint 匹配当前 Key 且未临近过期的 ReferenceUpload 才能进入任务 payload。若真实 contract test 失败，本版本阻断图生图上线，不临时加入不安全的媒体代理。
 
-该 endpoint 要求一次性 enrollment capability、DPoP body proof、精确 Origin/CORS，并原子消费 intent；不接受普通 BFF session cookie，不返回 secret。
+URL 按用途使用不同 schema：reference upload URL、Kie result URL、download URL 均要求 `https:`、默认 443、无 userinfo、无 IP/localhost、长度受限，并匹配 contract fixture 维护的精确 hostname allowlist。未知 host 的 URL 可以保留为元数据，但不得渲染、打开或传入下载代理，直到 allowlist 经验证更新。服务端永不抓取图片或跟随用户提供的 URL。
 
-内部接口只接受 AWS/Vercel OIDC service identity 或 SQS/EventBridge，不接受用户提供任意 Job/tenant：
+## 13. 错误处理
 
-```text
-outbox dispatcher
-credential authorization service
-Kie submit/query worker
-media archive worker
-account refresh worker
-maintenance/purge worker
-```
+稳定错误类别：
 
-Webhook 独立位于 AWS API Gateway，自定义域名与 Web App 分离。
+- `KEY_MISSING`
+- `KEY_INVALID`
+- `CREDIT_INSUFFICIENT`
+- `MODEL_VALIDATION_FAILED`
+- `UPLOAD_FAILED`
+- `UPSTREAM_RATE_LIMITED`
+- `UPSTREAM_TIMEOUT`
+- `UPSTREAM_UNAVAILABLE`
+- `TASK_NOT_FOUND`
+- `RESULT_URL_UNAVAILABLE`
+- `LOCAL_STORAGE_FAILED`
 
-## 19. WAF、反滥用与成本 DoS
+规则：
 
-### 19.1 资源滥用
+- 错误卡片保留在对应 turn 中。
+- 批次局部失败不隐藏成功图片。
+- 创建歧义超时明确提示可能已经扣费。
+- 未知任务只允许用户手动创建一条带 `retryOfLocalTaskId` 的新任务，并再次提示重复扣费风险；原 Task 永不重提。
+- IndexedDB 写入失败时停止新增任务，避免远端已扣费但本地无记录。
+- 存储配额不足时提供 JSON 导出和清理入口。
+- 统一 logger 只接收 requestId、route、status 和稳定错误码；禁止记录 request、Headers、上游 body、error cause/config。上游错误即使回显 Key、prompt 或 URL，也必须在响应和日志前被替换。
 
-- Vercel WAF：DDoS、managed rules、Bot Protection、IP/JA4/ASN/route rate limit。
-- AWS WAF：webhook、credential ingest 和 upload intent 单独规则。
-- Auth0：attack protection、bot、breached password、MFA。
-- 应用：tenant/user/connection/IP/device/model/route 多维限流。
-- 同一 credential fingerprint 默认不能跨 tenant 重复绑定；例外必须安全审查。
-- Generation `Idempotency-Key` 必填。
-- Batch Matrix 和 ZIP 有硬任务/bytes/time 上限。
-- Quota 达到时 fail closed，不启动 Kie/S3 副作用。
-- 异常 credits 下降、KMS decrypt 激增、429/402、失败率、DLQ 积压触发告警和 kill switch。
-- CAPTCHA 只辅助，不替代身份、quota 和服务端授权。
+## 14. 性能
 
-### 19.2 内容安全与公众滥用
+- 图库使用虚拟化或分段渲染，目标支持至少 2,000 条 URL 元数据。
+- 图片使用 `loading="lazy"` 和稳定 `aspect-ratio`。
+- IndexedDB 查询按房间、状态、创建时间、收藏建立索引。
+- 任务轮询按可见性和 next poll time 调度，不为每个卡片创建独立 timer。
+- 不注册 Service Worker。浏览器只使用普通 HTTP cache 加载应用静态资源；Kie 图片、API 响应和 Key 不进入应用控制的离线缓存。
+- 图片 URL 不通过 Next Image Optimization 代理，避免服务端间接缓存和远程域名维护；使用受控原生图片组件。
+- 预览和下载链接只接受已验证 HTTPS URL，使用 `noopener,noreferrer`；禁止 iframe、object、embed 或 HTML 注入。ZIP 设置单文件、总字节和任务数上限，完成后及时 `URL.revokeObjectURL()`，不写 IndexedDB 或 Cache Storage。
 
-- 公开注册前必须发布 Terms of Service、Acceptable Use Policy、隐私政策、版权/DMCA 和举报/申诉流程。
-- 不提供公开图片广场；用户资产默认 private，减少传播风险。
-- Prompt、上传和生成结果进入分层内容安全策略；Kie 自带 moderation 不能作为唯一控制。
-- 上传/输出安全 derivative 可接入经过法律和隐私评审的商业内容安全服务；疑似违法内容进入隔离状态，不能生成 signed view URL。
-- 建立用户举报、账号冻结、credential/tenant kill switch、证据 legal hold、申诉和误报恢复。
-- 涉及 CSAM 或其他法定报告义务时按部署司法辖区由合格法务制定流程并对接有资质机构；开发者不得自行浏览或传播疑似内容。
-- 内容审查使用独立 reviewer role、fresh MFA、最小可见范围、双人批准和完整审计；普通 support/admin 无资产查看权。
-- Copyright takedown、重复侵权和执法请求均有工单、身份验证、保全和时限控制。
-- Public signup 只有在 Legal/Safety owner 提供已批准政策与处置 runbook 后才能开启。
+## 15. 测试与验证
 
-## 20. 日志、审计与隐私
+用户明确不采用 TDD。实施顺序是先完成垂直功能，再补充高价值测试和完整验证。
 
-### 20.1 允许列表日志
+### 15.1 单元和集成测试
 
-只记录 request ID、tenant opaque ID、actor opaque ID、action、target opaque ID、结果、时间、risk 和安全分类。
+- 模型适配器 schema 和参数组合。
+- `5x` 展开为五个独立任务。
+- 队列限流、退避、局部失败和歧义超时。
+- 双标签页同时打开时，同一 queued Task 只提交一次。
+- queued、stale submitting、丢 Key和换 Key 的恢复。
+- leader 在 POST 前后崩溃、lease 过期、迟到响应和手动 retry 的竞态；每个 submission attempt 最多一个不可变 `remoteTaskId`。
+- `resultJson` 安全解析。
+- IndexedDB migration、恢复、导入和导出。
+- 本浏览器 credits 统计。
+- URL 失效状态转换。
+- 离线和临时网络错误不得误判 URL 过期。
+- 上传随机命名、过期阻断和同名隔离。
+- 捕获真实 multipart，断言 field 和 file part 的 filename/header/body 均不含原文件名或本地路径。
+- 代理 allowlist、Origin、no-store 和敏感信息脱敏。
+- DOM-XSS payload 覆盖 prompt、上游错误、导入 JSON 和模型 label，并扫描危险 DOM sinks。
+- mock Kie 故意在错误中回显 Key、Authorization、prompt、URL，验证响应、日志和 trace 零命中。
+- 对生产构建响应断言 CSP 为 enforce 而非 Report-Only、每个响应 nonce 有效且变化、`script-src` 不含 `unsafe-inline`/`unsafe-eval`；Playwright 注入 inline script 必须被阻止且 Key 不泄漏。
 
-禁止记录：
+### 15.2 Playwright
 
-- API Key、HMAC、DEK、token、cookie。
-- signed URL、callback route 明文、Kie result URL。
-- request/response body、Authorization headers。
-- 完整 prompt、原图内容、Auth0 claims 全量。
+- 首次 Key 设置与连接检查。
+- 新房间 composer 为空。
+- 复制 prompt 后手动粘贴到另一房间。
+- `5x` 生成和部分失败展示。
+- 模拟关闭/重开后的 taskId 补查。
+- 双标签页 leader 切换与零重复提交。
+- 同源标签页 Key 替换同步时只广播 fingerprint/版本，不广播明文 Key。
+- 图库筛选、收藏、集合和破图占位。
+- 单图下载和 ZIP 能力降级。
+- 320px、768px、1440px 的布局与无重叠检查。
+- 键盘导航、焦点、tooltip 和可访问名称。
 
-上游即使在错误中回显 Key，也只能通过 error allowlist mapper。
+### 15.3 完成门禁
 
-IaC 同时约束托管层：API Gateway access log 不记录 URI path/body/Auth headers；AWS WAF 关闭或 redact URI/body sampled requests；Vercel logs/traces 禁 request/response body、headers 和 outbound URL；S3 不启用可能记录 SigV4 query 的 server-access log，改用不含签名查询串的 CloudTrail data events；SIEM ingestion 再做第二次字段 allowlist/redaction。
-
-### 20.2 不可篡改审计
-
-- DB audit table append-only。
-- 每日流入独立 AWS account 的 S3 Object Lock WORM bucket。
-- KMS CloudTrail 开启且不可由应用角色关闭。
-- Auth0 logs、Vercel WAF、AWS WAF、CloudTrail 汇总 SIEM。
-- 审计记录 key create/rotate/decrypt/destroy purpose、登录、step-up、生成、quota、admin 和恢复。
-- KMS CloudTrail request ID 与应用 append-only audit event 关联；可变 purpose 由应用审计记录，不能伪称 KMS encryption context 会记录每次操作 purpose。
-- 不在审计中保存 secret 或 prompt。
-
-### 20.3 数据生命周期
-
-- 普通 Asset 默认永久保存，直到用户 Trash + 30 天或永久删除。
-- Abandoned upload 24 小时清理。
-- Kie 临时 URL 不持久化。
-- Connection 删除按 graceful/emergency 生命周期从 live vault 移除；备份由 tombstone 与 retention 控制，tenant KEK deletion 提供最终 crypto-erasure。
-- 用户删除：停止新任务、取消未提交 outbox、销毁 secrets、删除 S3 objects；late callback 由无 PII tombstone 吞掉。
-- 合规审计只保留最少无内容事件，保留期由部署地区政策配置。
-
-## 21. 备份、恢复与事故响应
-
-- Neon 开启 protected production branch、最大可用 PITR。
-- 每日 encrypted logical backup 到独立 AWS account + Object Lock。
-- S3 开 versioning、SSE-KMS 和跨账户备份策略。
-- 每季度实测 DB PITR、S3 restore 和 credential rotation。
-- Runbook：Kie outage、webhook outage、KMS outage、SQS/DLQ、Key 泄漏、credits drain、RLS 错误、旧部署泄漏。
-- Kill switch 顺序：停止 submit/decrypt -> 保全审计 -> 隔离 credential/tenant -> 调查 -> 恢复。
-- 生产管理员使用独立 staff IdP、硬件安全钥匙、无共享账号。
-- KMS policy、production data restore、平台安全配置和发布执行双人审批。
-- Support impersonation 默认禁用；任何 break-glass 有短 TTL、双人审批和全量审计。
-
-## 22. 供应链与部署安全
-
-- 提交 `pnpm-lock.yaml`；CI 用 `pnpm install --frozen-lockfile`。
-- Install scripts 使用明确 allowlist。
-- GitHub Actions 固定完整 commit SHA，最小 `permissions`，fork PR 无 secrets。
-- Main branch protection、两人 review、签名 release artifact。
-- gitleaks/secret scan、CodeQL/SAST、OSV/Trivy/SCA、license scan、CycloneDX SBOM。
-- 禁止第三方分析、广告和远端执行 JS。
-- 严格 nonce CSP；可行时启用 Trusted Types。
-- Production/preview/dev 的 Auth0、Neon、AWS account、credential vault/ciphertext、KMS context、S3、SQS 完全隔离；preview 禁止导入或复制 production BYOK credential。
-- Preview 默认 `LIVE_KIE_ENABLED=false`，不能产生真实费用。
-- 环境变量轮换后必须撤销上游旧 credential 并封锁旧 deployment；仅改 Vercel env 不会改变旧 deployment。
-
-## 23. 部署依赖
-
-- Vercel Enterprise Secure Compute：Next.js BFF、WAF/Bot、固定私网/出口、独立 prod/preview；不用二选一配置。
-- Auth0 Enterprise：Universal Login、Passkey/MFA、Adaptive MFA、Attack Protection、log streaming。
-- Neon production plan：Postgres、FORCE RLS、pooling、IP allow/private networking、最大 PITR。
-- AWS：Lambda control plane/credential services/Kie execution、ECS Fargate media worker、KMS、private S3、SQS FIFO/DLQ、API Gateway、WAF、EventBridge、CloudTrail、Object Lock audit bucket。
-- Vercel OIDC 到 AWS roles；无长期 AWS Access Key。
-- 所有 Kie 调用只从 AWS VPC NAT Gateway EIP 集合出站，供用户设置 Kie IP allowlist；Vercel 不直接调用 Kie。
-- 稳定 `app` 和 `hooks` 自定义域名。
-
-## 24. 测试策略
-
-不采用 TDD；功能实现后集中验证。安全测试是合并/上线门禁，不可因开发时间跳过。
-
-### 24.1 模型与逻辑
-
-- 每个首发 adapter 的 schema/request/success/fail fixture。
-- GPT Image 2 20,000 字符、16 图、30MB、分辨率/比例组合。
-- 双状态机、终态单调、quota、rate、idempotency、uncertain submission。
-- JSON import/export 不含 secret/signed URL。
-
-### 24.2 Tenant/BOLA
-
-- 两个真实测试 tenant 跑所有 API、worker、asset 和 relation 交叉矩阵。
-- 跨 tenant 一律 404/403；直接 DB RLS 查询同样拒绝。
-- Composite FK 拒绝跨 tenant asset lineage。
-- Runtime role 无 BYPASSRLS/table owner。
-- `SECURITY DEFINER` resolve/claim procedures 固定 search_path、PUBLIC revoked；对随机 route/op/job ID、SQL/meta characters、跨 tenant 和直接调用做 fuzz/negative matrix。
-
-### 24.3 Auth
-
-- Passkey/MFA、step-up、session fixation/rotation/revoke、CSRF、Origin。
-- Recovery 24 小时冷却和旧 session 撤销。
-- Account enumeration、brute force、bot、refresh token reuse。
-- Credential enrollment intent 绑定 tenant/session/action/ephemeral DPoP、2 分钟 TTL、单次消费；错误 Origin/CORS、replay 和 body tamper 全拒绝，Next.js runtime/log 不出现 plaintext。
-- Admin hardware-key 和双人审批演练。
-
-### 24.4 Credential/KMS
-
-- DB dump、backup、browser storage、client bundle、logs/trace/workflow/SQS/outbox 全扫描，零明文 secret。
-- Web/webhook/media/admin role 调 API Key Decrypt 必须 AccessDenied。
-- Kie execution role 拿到其他 tenant ciphertext 和完整 context 仍必须 AccessDenied；只有 credential authorization service 为当前 lease 签发的 exact grant 可解密一个 version。
-- Active/previous HMAC、API key 独立轮换、graceful drain、emergency destroy、external revoke。
-- KMS context 绑定错误时 Decrypt 失败。
-- CloudTrail decrypt request ID 与应用 append-only audit 的 opaque purpose 正确关联，二者都无敏感值。
-
-### 24.5 Webhook
-
-- Valid、错误 connection、缺/重复 header、bad Base64、bad length、过去/未来 timestamp。
-- 同事件 100 次重放只产生一个 inbox/outbox/query/asset。
-- 合法签名篡改 result URL/state，最终仍只使用 `recordInfo`。
-- A connection 事件发送到 B route 必须失败。
-- Callback 早于 create response、100 次并发、taskId mismatch/quarantine。
-- HMAC rotation grace/expiry；一次最多尝试两个版本。
-- 同一 `(connection, taskId, timestamp)` 即使 active/previous 产生不同有效 signature，也只能有一个 inbox/outbox。
-- Unknown route 404、tombstone 200、oversized/non-JSON reject。
-- API Gateway/WAF/Vercel/SIEM 托管日志样本不得出现 route plaintext、body、Auth headers 或 signed query。
-
-### 24.6 Outbox/SQS/竞态
-
-- DB commit 后进程死于 SQS send 前，由 EventBridge dispatcher 恢复。
-- Duplicate dispatcher/consumer 在 `create_started` 前由 fencing 消解；`create_started` 后任何异常都不得自动产生第二个 provider POST。
-- 在 DNS、connect、request headers、request body、response headers、taskId 落库前后和 DB commit 边界逐点 kill worker；遗留 started attempt 进入 uncertain，零自动重发。
-- 同 idempotency key 100 并发只产生一个 Batch。
-- 429 安全重试；timeout/reset/5xx 进入 uncertain，零自动重复 create。
-- 浏览器关闭、worker crash、部署切换不影响完成。
-- Graceful disable/delete 与 submit race 无越权调用。
-
-### 24.7 Asset/SSRF
-
-- 伪 MIME、polyglot、truncated、pixel/frame bomb、SVG/GIF、parser crash。
-- Presigned POST exact key/content-length-range/MIME/SSE-KMS policy；超限在 S3 接收前拒绝，reservation 过期释放并清理。
-- `127.0.0.1`、metadata、private IPv4/IPv6、userinfo、未知 host、DNS rebinding、跨 host redirect、慢流、超大响应。
-- Media worker 资源受限，失败不影响其他 tenant。
-- Upload 成功 DB 失败重试后只有一个 object/Asset。
-- Signed URL exact path/method/TTL，跨 tenant IDOR 全拒绝。
-
-### 24.8 Credits/实时
-
-- 并发 refresh coalesce。
-- 401/429/5xx 保留旧余额并标 stale，不显示 0。
-- 余额只返回所属 tenant/connection。
-- SSE/轮询断线恢复和 quota。
-
-### 24.9 UI/E2E
-
-- 注册、MFA、连接 Kie、credits。
-- 房间、新房间空白、Copy 手动粘贴。
-- GPT Image 2 图生图上传/排序/16 图。
-- `5x` 后关闭页面；mock webhook 完成；重开全部已归档。
-- 生成成功但 archive 失败/重试。
-- Asset 搜索、标签、收藏、比较、谱系、下载。
-- 桌面 1440x900/1280x720，手机 390x844/320x568 截图，无重叠/溢出/控制台错误。
-
-### 24.10 内容安全
-
-- 举报、freeze、quarantine、legal hold、appeal、takedown 和 reviewer 双人审批流程。
-- 普通 support/admin 无法查看隔离资产；reviewer 所有访问有 fresh MFA 和审计。
-- 安全服务 outage 时公开上传/生成按策略 fail closed，不静默绕过。
-- 测试 fixture 使用合成安全样本，不在开发/CI 中保存或传播真实违法内容。
-
-### 24.11 必须通过
-
-```text
+```bash
 pnpm lint
 pnpm typecheck
 pnpm test
 pnpm run build
-pnpm security:scan
-pnpm sbom
-pnpm infra:validate
 ```
 
-真实 Kie smoke test 只在专用低额度 sandbox Key、固定 IP 和用户允许扣费后执行。
+另外执行：
 
-## 25. 公网 Go-Live 门禁
+- `pnpm audit` 并检查高危依赖。
+- Playwright 截图人工检查桌面和移动端 UI。
+- 使用 mock server 覆盖全部任务状态。
+- credits contract test 必跑；生产 origin 的 upload OPTIONS 与小文件 multipart smoke 必跑，使用专用测试 Key且不创建生成任务。
+- 30 MB 上传边界作为图生图上线门禁；真实生成 smoke 由用户明确选择后执行，默认不消耗生成 credits。
+- 检查生产日志，确认无 Key、prompt 和 Authorization 泄漏。
 
-本节是外部运营上线门禁，不等同于本地工程交付完成。Engineering 可在 `PUBLIC_SIGNUP_ENABLED=false` 下验收；公开注册只有以下全部通过才可开启，不能口头豁免：
+## 16. 验收标准
 
-1. 两 tenant 全 API/worker BOLA/RLS 矩阵通过。
-2. Passkey/MFA、step-up、session、恢复冷却、CSRF、枚举测试通过。
-3. 所有客户端/构建/日志/队列/备份扫描无明文 Key/HMAC/token/signed URL。
-4. KMS role negative tests、credential/HMAC/KMS 轮换演练通过。
-5. Webhook forged/replay/early/duplicate/out-of-order/mismatch corpus 通过。
-6. SSRF/upload bomb/parser crash corpus 通过。
-7. Idempotency/outbox/SQS/uncertain/kill switch chaos tests 通过。
-8. Credits drain、429/402、Kie/KMS/SQS outage 告警和 runbook 演练通过。
-9. DB PITR、S3 restore、credential revoke、旧部署封锁演练通过。
-10. Lint/type/test/build/SAST/SCA/secret scan/SBOM 无未处置 Critical/High。
-11. 独立安全审查和渗透测试完成；Critical/High 修复并复测。
-12. 管理员硬件钥匙、双人审批、SIEM 告警和值班制度已实际启用。
-13. Legal/Safety owner 已批准 ToS、AUP、隐私、举报、CSAM/执法、版权和申诉 runbook；`PUBLIC_SIGNUP_ENABLED` 才可开启。
+1. 无登录即可使用，项目中不存在邮箱、账户、组织或租户流程。
+2. 不配置数据库、S3 或其他应用自有图片存储。
+3. API Key、房间、任务和 URL 在不同浏览器或 origin 间互不共享。
+4. 新房间为空，只能通过复制图标手动复制 prompt。
+5. `5x` 可靠创建五个独立任务，多标签页下每个本地任务最多提交一次，并分别显示状态。
+6. 已持久化 `remoteTaskId` 且已保留或重新提供 fingerprint 匹配 Key 时，页面重开后能补查未完成任务；没有 `remoteTaskId` 的歧义提交不自动重试。
+7. 图库只保存 Kie URL 和元数据，不保存图片 Blob/base64。
+8. URL 失效时显示占位并保留 prompt、参数和 taskId。
+9. GPT Image 2 image-to-image 的输入数量、30 MB 上传门禁、临时 URL 过期、比例和分辨率约束正确。
+10. 顶栏区分官方剩余 credits 与本浏览器计算统计。
+11. 所有代理 route 无状态、no-store、严格 allowlist，且不记录敏感数据。
+12. 桌面和移动端 UI 无遮挡、溢出和明显布局跳动。
+13. `pnpm run build`、lint、typecheck 和测试全部通过。
 
-责任与证据：
+## 17. 实施顺序
 
-- Security owner：威胁模型、渗透测试报告、Critical/High 复测、KMS/RLS/WAF 证据。
-- Operations owner：SIEM、告警、值班、kill switch、PITR/S3/Kie outage 演练记录。
-- Legal/Safety owner：政策、举报/申诉、法定报告、版权和审查权限流程。
-- Product owner：quota、BYOK 文案、无共享 credits、用户通知和 launch flag 审批。
-- 每项证据记录不可变 artifact ID、owner、日期和有效期；过期门禁自动关闭 launch flag。
+用户确认本规格后：
 
-## 26. 验收标准
+1. 初始化 Next.js、TypeScript、pnpm、Tailwind、shadcn/ui。
+2. 建立模型适配器、Zod schema 和无状态 Kie proxy。
+3. 建立 Dexie schema、migration 和本地 Key 设置。
+4. 实现房间、composer、批量队列和恢复轮询。
+5. 实现 GPT Image 2 text-to-image 与 image-to-image。
+6. 验证 Kie File Upload CORS，并实现参考图上传路径。
+7. 实现 URL 图库、失效状态和下载降级。
+8. 实现 credits 状态与本地统计。
+9. 增加其他已验证模型适配器。
+10. 补充测试，完成 build、UI 和安全验证。
 
-1. Git 仓库为 `kie-ai-image-app`，默认分支 `main`。
-2. 任何人可注册，但必须邮箱验证、MFA 和自己的 Kie connection 才能生成。
-3. Kie Key/HMAC 不进入浏览器存储、client bundle、普通 Web runtime、日志或 DB 明文。
-4. DB dump 不能恢复 credential；只有最小 worker role 可按 context 解密单个版本。
-5. 用户只能访问自己的 connection、credits、Job 和 Asset。
-6. GPT Image 2 I2I 支持 16 图、30MB、1K/2K/4K 和严格组合校验。
-7. `5x` 创建五个独立任务；浏览器关闭后继续完成和永久归档。
-8. Webhook HMAC、重放、早到、重复、乱序和 mismatch 安全处理。
-9. 漏 webhook 可 durable polling 补回。
-10. Kie success + S3 fail 可自动/手动重试，不误报生成失败。
-11. UI 只读私有 S3 Asset，不依赖 Kie URL。
-12. 新房间无旧 prompt；Copy 只复制可见文本；Asset 输入必须显式选择。
-13. Credits 标记官方来源、采样时间和 stale 状态。
-14. Asset 可搜索、收藏、标签、比较、谱系、Trash、下载和导出。
-15. WAF、quota、rate、idempotency、kill switch 和告警生效。
-16. 桌面/手机无重叠、截断和不可操作控件。
-17. 第 24.11 节命令和工程安全测试通过；若第 25 节外部门禁未完成，系统必须保持 `PUBLIC_SIGNUP_ENABLED=false`。
+## 18. 官方参考
 
-## 27. 实施顺序
+- GPT Image 2 image-to-image：<https://docs.kie.ai/market/gpt/gpt-image-2-image-to-image>
+- GPT Image 2 Playground：<https://kie.ai/gpt-image-2?model=gpt-image-2-image-to-image>
+- Kie 接入与速率限制：<https://docs.kie.ai/1973359m0>
+- Kie 查询任务：<https://docs.kie.ai/market/common/get-task-detail>
+- Kie account credits：<https://docs.kie.ai/common-api/get-account-credits>
+- Kie file upload：<https://docs.kie.ai/file-upload-api/quickstart>
+- Kie file stream upload：<https://docs.kie.ai/file-upload-api/upload-file-stream/>
+- Kie direct download：<https://docs.kie.ai/common-api/download-url>
+- Vercel 4.5 MB body limit：<https://vercel.com/kb/guide/how-to-bypass-vercel-body-size-limit-serverless-functions>
 
-1. 初始化 pnpm monorepo、Next.js、TypeScript、Tailwind、shadcn/ui。
-2. 用 IaC 建 Auth0/Neon/AWS dev 环境和 OIDC roles。
-3. 建 DB schema、FORCE RLS、roles、migrations 和 tenant negative tests。
-4. 建 credential ingest、credential authorization、per-operation KMS grant、envelope encryption 和连接向导。
-5. 建 S3 upload/finalize/media validation。
-6. 建 outbox、SQS、dispatcher、Kie caller 和 reconcile worker。
-7. 建多租户 webhook verifier、inbox 和 authoritative query。
-8. 建 archive worker、SSRF 防护、S3 永久资产。
-9. 建 GPT Image 2 adapters、房间、Composer、`5x` 和任务 UI。
-10. 建 credits、账户/安全中心和近实时状态。
-11. 建 Asset 库、比较、谱系、标签、Trash 和导出。
-12. 扩展其余首发 adapters。
-13. 集中完成测试、响应式、可访问性、安全扫描和 chaos。
-14. 完成工程验收；第 25 节外部门禁另由指定 owner 签署后再开放公网。
-
-## 28. 官方依据
-
-- GPT Image 2 I2I：<https://docs.kie.ai/market/gpt/gpt-image-2-image-to-image>
-- Kie task：<https://docs.kie.ai/market/common/get-task-detail>
-- Kie webhook HMAC：<https://docs.kie.ai/common-api/webhook-verification>
-- Kie credits：<https://docs.kie.ai/common-api/get-account-credits>
-- Kie security/retention/rate：<https://kie.ai/getting-started>
-- Auth0 passkeys：<https://auth0.com/docs/authenticate/database-connections/passkeys/passkey-apis>
-- Auth0 MFA：<https://auth0.com/docs/secure/multi-factor-authentication/enable-mfa>
-- Auth0 step-up：<https://auth0.com/docs/secure/multi-factor-authentication/step-up-authentication>
-- Auth0 attack protection：<https://auth0.com/docs/secure/attack-protection/breached-password-detection>
-- Vercel OIDC：<https://vercel.com/docs/oidc>
-- Vercel WAF：<https://vercel.com/docs/vercel-firewall/vercel-waf>
-- Vercel Bot Management：<https://vercel.com/docs/bot-management>
-- Vercel Static IP：<https://vercel.com/kb/guide/how-to-allowlist-deployment-ip-address>
-- Neon RLS：<https://neon.com/docs/guides/row-level-security>
-- AWS KMS encryption context：<https://docs.aws.amazon.com/kms/latest/developerguide/encrypt_context.html>
-- AWS S3 Object Lock：<https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lock.html>
+实现期间必须以当前官方文档和真实 API 响应为准。若文档与响应不一致，适配器应拒绝未知结构并记录不含敏感内容的诊断信息，而不是猜测字段。
