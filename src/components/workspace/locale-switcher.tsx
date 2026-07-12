@@ -12,6 +12,21 @@ import {
 import { useI18n } from "@/i18n/i18n-provider";
 import { cn } from "@/lib/utils";
 
+function setLocaleCookie(next: Locale) {
+  document.cookie = `${localeCookieName}=${next}; path=/; max-age=31536000; samesite=lax`;
+}
+
+function buildLocalePath(pathname: string, next: Locale) {
+  const segments = pathname.split("/");
+  // pathname: /en/... or /zh
+  if (segments.length >= 2 && locales.includes(segments[1] as Locale)) {
+    segments[1] = next;
+  } else {
+    segments.splice(1, 0, next);
+  }
+  return segments.join("/") || `/${next}`;
+}
+
 export function LocaleSwitcher({ className }: { className?: string }) {
   const { locale, t } = useI18n();
   const pathname = usePathname();
@@ -19,16 +34,8 @@ export function LocaleSwitcher({ className }: { className?: string }) {
 
   const switchLocale = (next: Locale) => {
     if (next === locale) return;
-    document.cookie = `${localeCookieName}=${next}; path=/; max-age=31536000; samesite=lax`;
-    const segments = pathname.split("/");
-    // pathname: /en/... or /zh
-    if (segments.length >= 2 && locales.includes(segments[1] as Locale)) {
-      segments[1] = next;
-    } else {
-      segments.splice(1, 0, next);
-    }
-    const nextPath = segments.join("/") || `/${next}`;
-    router.replace(nextPath);
+    setLocaleCookie(next);
+    router.replace(buildLocalePath(pathname, next));
     router.refresh();
   };
 

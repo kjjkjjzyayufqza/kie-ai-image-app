@@ -2,6 +2,27 @@
   "name": "kie-ai-image-app",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
+  "description": "Browser-local Next.js workspace for Kie AI / GPT Image 2 image generation",
+  "homepage": "https://kie-ai-image-app.vercel.app",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kjjkjjzyayufqza/kie-ai-image-app.git"
+  },
+  "bugs": {
+    "url": "https://github.com/kjjkjjzyayufqza/kie-ai-image-app/issues"
+  },
+  "keywords": [
+    "nextjs",
+    "react",
+    "typescript",
+    "image-generation",
+    "ai",
+    "kie-ai",
+    "gpt-image",
+    "browser-local",
+    "vercel"
+  ],
   "scripts": {
     "dev": "next dev",
     "build": "next build",

@@ -1,0 +1,185 @@
+# Silent dependency maintenance:
+# - No Dependabot / no PRs / no issues
+# - Patch-only updates
+# - Push to main only when lint + typecheck + unit tests + build + e2e all pass
+# - Verification failure discards changes and exits 0 (avoids red-X failure mails)
+#
+# GitHub still may email you based on account notification settings.
+# Disable: GitHub → Settings → Notifications → Actions
+
+name: Silent dependency update
+
+on:
+  schedule:
+    # Every Monday 03:17 UTC (off-peak, slightly offset from :00)
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: silent-deps-update
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    name: Patch deps and push if verified
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          # Default GITHUB_TOKEN can push when branch protection does not require PRs
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "pnpm"
+
+      - name: Install current dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Apply patch-only dependency bumps
+        run: |
+          # Only patch within the same major.minor line — never major/minor jumps
+          pnpm dlx npm-check-updates@latest \
+            --upgrade \
+            --target patch \
+            --packageFile package.json
+
+          # Keep eslint-config-next aligned with next (both are pinned exactly)
+          node <<'NODE'
+          const fs = require("node:fs");
+          const path = "package.json";
+          const pkg = JSON.parse(fs.readFileSync(path, "utf8"));
+          const nextVersion = pkg.dependencies?.next;
+          if (
+            nextVersion &&
+            pkg.devDependencies &&
+            Object.prototype.hasOwnProperty.call(pkg.devDependencies, "eslint-config-next")
+          ) {
+            pkg.devDependencies["eslint-config-next"] = nextVersion;
+          }
+          // Keep react / react-dom on the same version when both present
+          const reactVersion = pkg.dependencies?.react;
+          if (reactVersion && pkg.dependencies?.["react-dom"]) {
+            pkg.dependencies["react-dom"] = reactVersion;
+          }
+          fs.writeFileSync(path, `${JSON.stringify(pkg, null, 2)}\n`);
+          NODE
+
+          pnpm install
+
+      - name: Detect whether anything changed
+        id: changes
+        run: |
+          if git diff --quiet -- package.json pnpm-lock.yaml; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No patch-level dependency updates available."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Dependency files changed:"
+            git --no-pager diff --stat -- package.json pnpm-lock.yaml
+          fi
+
+      - name: Verify (lint)
+        if: steps.changes.outputs.changed == 'true'
+        id: lint
+        continue-on-error: true
+        run: pnpm lint
+
+      - name: Verify (typecheck)
+        if: steps.changes.outputs.changed == 'true' && steps.lint.outcome == 'success'
+        id: typecheck
+        continue-on-error: true
+        run: pnpm typecheck
+
+      - name: Verify (unit tests)
+        if: >-
+          steps.changes.outputs.changed == 'true'
+          && steps.lint.outcome == 'success'
+          && steps.typecheck.outcome == 'success'
+        id: test
+        continue-on-error: true
+        run: pnpm test
+
+      - name: Verify (production build)
+        if: >-
+          steps.changes.outputs.changed == 'true'
+          && steps.lint.outcome == 'success'
+          && steps.typecheck.outcome == 'success'
+          && steps.test.outcome == 'success'
+        id: build
+        continue-on-error: true
+        run: pnpm build
+
+      - name: Install Playwright Chromium
+        if: >-
+          steps.changes.outputs.changed == 'true'
+          && steps.lint.outcome == 'success'
+          && steps.typecheck.outcome == 'success'
+          && steps.test.outcome == 'success'
+          && steps.build.outcome == 'success'
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Verify (e2e)
+        if: >-
+          steps.changes.outputs.changed == 'true'
+          && steps.lint.outcome == 'success'
+          && steps.typecheck.outcome == 'success'
+          && steps.test.outcome == 'success'
+          && steps.build.outcome == 'success'
+        id: e2e
+        continue-on-error: true
+        run: pnpm test:e2e
+        env:
+          CI: "true"
+
+      - name: Commit and push only when fully verified
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+
+          if [ "${{ steps.lint.outcome }}" != "success" ] \
+            || [ "${{ steps.typecheck.outcome }}" != "success" ] \
+            || [ "${{ steps.test.outcome }}" != "success" ] \
+            || [ "${{ steps.build.outcome }}" != "success" ] \
+            || [ "${{ steps.e2e.outcome }}" != "success" ]; then
+            echo "Verification failed — discarding dependency changes. main is unchanged."
+            git checkout -- package.json pnpm-lock.yaml || true
+            # Exit 0 on purpose: keep the workflow green so it stays silent.
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add package.json pnpm-lock.yaml
+          if git diff --cached --quiet; then
+            echo "Nothing staged to commit."
+            exit 0
+          fi
+
+          git commit -m "$(cat <<'EOF'
+          chore(deps): silent patch update
+
+          Automated patch-only dependency update. Gated by lint, typecheck,
+          unit tests, production build, and Playwright e2e before push to main.
+          EOF
+          )"
+
+          # Rebase onto latest main in case something landed during the job
+          git pull --rebase origin main
+          git push origin HEAD:main
+          echo "Verified dependency patch update pushed to main."
