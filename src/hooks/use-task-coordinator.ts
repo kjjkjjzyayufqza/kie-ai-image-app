@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
+import { t } from "@/i18n/runtime";
 import { db } from "@/lib/db";
 import type { Asset, GenerationTask } from "@/lib/domain";
 import {
@@ -116,7 +117,7 @@ async function recoverInterruptedTasks(keyFingerprint: string): Promise<void> {
     .modify({
       status: "unknown",
       failureCode: "SUBMISSION_INTERRUPTED",
-      failureMessage: "提交响应未知，为避免重复扣费不会自动重试。",
+      failureMessage: t("errors.submitUnknown"),
       updatedAt: now,
       leaseOwner: undefined,
       leaseUntil: undefined,
@@ -189,7 +190,7 @@ async function submitNextTask(
       status: isDefiniteFailure ? "fail" : "unknown",
       failureCode: clientError?.code ?? "SUBMISSION_UNKNOWN",
       failureMessage:
-        clientError?.message ?? "提交响应未知，为避免重复扣费不会自动重试。",
+        clientError?.message ?? t("errors.submitUnknown"),
       completedAt: isDefiniteFailure ? Date.now() : undefined,
       leaseOwner: undefined,
       leaseUntil: undefined,
@@ -233,7 +234,7 @@ async function pollNextTask(
     const clientError = error instanceof KieClientError ? error : undefined;
     await db.tasks.update(task.localTaskId, {
       failureCode: clientError?.code ?? "POLL_FAILED",
-      failureMessage: clientError?.message ?? "任务状态暂时无法更新。",
+      failureMessage: clientError?.message ?? t("errors.statusUnavailable"),
       pollAfter: Date.now() + 15_000,
       updatedAt: Date.now(),
     });
@@ -273,7 +274,7 @@ async function applyTaskResult(
     ) {
       await db.tasks.update(task.localTaskId, {
         failureCode: "RESULT_CONTRACT_CHANGED",
-        failureMessage: "Kie 返回的结果数量发生变化，已保留原图库记录。",
+        failureMessage: t("errors.resultCountChanged"),
       });
       return;
     }

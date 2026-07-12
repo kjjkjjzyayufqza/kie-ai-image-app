@@ -40,19 +40,20 @@ test.beforeEach(async ({ page }) => {
 });
 
 test("custom 7x batch renders seven placeholders immediately", async ({ page }) => {
-  await page.goto("/");
+  await page.goto("/en");
+  await page.getByRole("button", { name: "Text to image", exact: true }).click();
   await page.getByLabel("Prompt").fill("Seven studio variations of a ceramic lamp");
-  await page.getByLabel("生成数量").fill("7");
-  await page.getByRole("button", { name: "生成 7x" }).click();
+  await page.getByLabel("Generation count").fill("7");
+  await page.getByRole("button", { name: "Generate 7x" }).click();
 
   await expect(page.getByTestId("task-card")).toHaveCount(7);
   await expect(page.getByText("7x", { exact: true }).first()).toBeVisible();
 });
 
 test("a new room starts with an empty prompt", async ({ page }) => {
-  await page.goto("/");
+  await page.goto("/en");
   await page.getByLabel("Prompt").fill("This must not carry into a new room");
-  await page.getByRole("button", { name: "新建对话" }).click();
+  await page.getByRole("button", { name: "New chat" }).click();
 
   await expect(page.getByLabel("Prompt")).toHaveValue("");
 });
@@ -60,25 +61,31 @@ test("a new room starts with an empty prompt", async ({ page }) => {
 test("a 37x batch requires confirmation and renders all placeholders", async ({
   page,
 }) => {
-  await page.goto("/");
+  await page.goto("/en");
+  await page.getByRole("button", { name: "Text to image", exact: true }).click();
   await page.getByLabel("Prompt").fill("Thirty seven layout studies");
-  await page.getByLabel("生成数量").fill("37");
-  await page.getByRole("button", { name: "生成 37x" }).click();
+  await page.getByLabel("Generation count").fill("37");
+  await page.getByRole("button", { name: "Generate 37x" }).click();
 
-  await expect(page.getByText("确认创建 37 个任务？")).toBeVisible();
-  await page.getByRole("button", { name: "确认生成" }).click();
+  await expect(page.getByText("Create 37 tasks?")).toBeVisible();
+  await page.getByRole("button", { name: "Confirm generate" }).click();
   await expect(page.getByTestId("task-card")).toHaveCount(37);
 });
 
 test("settings shows official credits separately from browser usage", async ({
   page,
 }) => {
-  await page.goto("/");
-  await page.getByRole("button", { name: "设置" }).click();
+  await page.goto("/en");
+  await page.getByRole("button", { name: "Settings" }).click();
 
-  await expect(page.getByRole("dialog").getByText("连接设置")).toBeVisible();
-  await expect(page.getByText("官方 credits")).toBeVisible();
+  await expect(page.getByRole("dialog").getByText("Connection settings")).toBeVisible();
+  await expect(page.getByText("Official credits")).toBeVisible();
   await expect(
-    page.getByText("以上为当前浏览器记录，不代表 Kie 全账号历史。"),
+    page.getByText("Browser-local records only. Not full Kie account history."),
   ).toBeVisible();
+});
+
+test("root redirects into a locale path", async ({ page }) => {
+  await page.goto("/");
+  await expect(page).toHaveURL(/\/(en|zh)(\/)?$/);
 });

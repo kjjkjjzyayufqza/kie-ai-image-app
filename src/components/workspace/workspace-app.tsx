@@ -6,10 +6,12 @@ import { useLiveQuery } from "dexie-react-hooks";
 import { ChatView } from "@/components/workspace/chat-view";
 import { Composer } from "@/components/workspace/composer";
 import { GalleryView } from "@/components/workspace/gallery-view";
+import { ResizableSidebar } from "@/components/workspace/resizable-sidebar";
 import { RoomSidebar } from "@/components/workspace/room-sidebar";
 import { SettingsDialog } from "@/components/workspace/settings-dialog";
 import { TaskQueueSheet } from "@/components/workspace/task-queue-sheet";
 import { Topbar } from "@/components/workspace/topbar";
+import { WorkspaceHydrationShell } from "@/components/workspace/ui-states";
 import {
   Sheet,
   SheetContent,
@@ -19,7 +21,9 @@ import {
 } from "@/components/ui/sheet";
 import { useKieKey } from "@/hooks/use-kie-key";
 import { useTaskCoordinator } from "@/hooks/use-task-coordinator";
+import { useI18n } from "@/i18n/i18n-provider";
 import { createInitialRoom, db } from "@/lib/db";
+import type { ImageResolution } from "@/lib/domain";
 import {
   createRoom,
   deleteRoom,
@@ -37,6 +41,7 @@ const activeTaskStates = new Set([
 ]);
 
 export function WorkspaceApp() {
+  const { t } = useI18n();
   const { apiKey, fingerprint } = useKieKey();
   const { isLeader } = useTaskCoordinator(apiKey, fingerprint);
   const [currentRoomId, setCurrentRoomId] = useState<string>();
@@ -44,12 +49,14 @@ export function WorkspaceApp() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [queueOpen, setQueueOpen] = useState(false);
   const [mobileRoomsOpen, setMobileRoomsOpen] = useState(false);
+  const [chatScrollRequest, setChatScrollRequest] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
 
   const queriedRooms = useLiveQuery(
     () => db.rooms.orderBy("updatedAt").reverse().toArray(),
     [],
   );
+  const hydrated = queriedRooms !== undefined;
   const rooms = useMemo(() => queriedRooms ?? [], [queriedRooms]);
   const currentRoom = rooms.find(
     (room) => room.id === currentRoomId && !room.deletedAt,
@@ -84,7 +91,8 @@ export function WorkspaceApp() {
       [currentRoomId],
     ) ?? [];
   const allAssets =
-    useLiveQuery(() => db.assets.orderBy("createdAt").reverse().toArray(), []) ?? [];
+    useLiveQuery(() => db.assets.orderBy("createdAt").reverse().toArray(), []) ??
+    [];
   const allTurns = useLiveQuery(() => db.turns.toArray(), []) ?? [];
   const collections =
     useLiveQuery(() => db.collections.orderBy("createdAt").toArray(), []) ?? [];
@@ -117,6 +125,20 @@ export function WorkspaceApp() {
       ),
     };
   }, [allTasks, currentTime, fingerprint]);
+  const observedCreditPrices = useMemo(() => {
+    const prices: Partial<Record<ImageResolution, number>> = {};
+    for (const task of allTasks) {
+      if (
+        task.keyFingerprint === fingerprint &&
+        task.creditsConsumed !== undefined &&
+        task.creditsConsumed > 0 &&
+        prices[task.requestSnapshot.resolution] === undefined
+      ) {
+        prices[task.requestSnapshot.resolution] = task.creditsConsumed;
+      }
+    }
+    return prices;
+  }, [allTasks, fingerprint]);
 
   useEffect(() => {
     if (rooms.length === 0) {
@@ -181,8 +203,12 @@ export function WorkspaceApp() {
     onDelete: (roomId: string) => void removeRoom(roomId),
   };
 
+  if (!hydrated) {
+    return <WorkspaceHydrationShell />;
+  }
+
   return (
-    <div className="flex h-dvh min-h-0 flex-col overflow-hidden bg-white">
+    <div className="flex h-dvh min-h-0 flex-col overflow-hidden bg-white pt-[env(safe-area-inset-top)]">
       <Topbar
         view={view}
         credits={snapshot?.credits}
@@ -198,12 +224,12 @@ export function WorkspaceApp() {
         onOpenSettings={() => setSettingsOpen(true)}
       />
 
-      <div className="flex min-h-0 flex-1">
-        <div className="hidden w-64 shrink-0 border-r md:block">
+      <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
+        <ResizableSidebar>
           <RoomSidebar {...roomSidebarProps} />
-        </div>
+        </ResizableSidebar>
 
-        <main className="relative flex min-w-0 flex-1 flex-col">
+        <main className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
           {view === "gallery" ? (
             <GalleryView
               assets={allAssets}
@@ -221,6 +247,7 @@ export function WorkspaceApp() {
                 apiKey={apiKey}
                 keyFingerprint={fingerprint}
                 hasApiKey={Boolean(apiKey)}
+                scrollRequest={chatScrollRequest}
                 onOpenSettings={() => setSettingsOpen(true)}
               />
               {currentRoomId ? (
@@ -229,7 +256,17 @@ export function WorkspaceApp() {
                   roomId={currentRoomId}
                   apiKey={apiKey}
                   keyFingerprint={fingerprint}
+                  availableCredits={snapshot?.credits}
+                  observedCreditPrices={observedCreditPrices}
+                  creditsStale={
+                    !snapshot ||
+                    currentTime === 0 ||
+                    currentTime - snapshot.checkedAt > 60_000
+                  }
                   onOpenSettings={() => setSettingsOpen(true)}
+                  onSubmitted={() =>
+                    setChatScrollRequest((request) => request + 1)
+                  }
                 />
               ) : null}
             </>
@@ -238,10 +275,13 @@ export function WorkspaceApp() {
       </div>
 
       <Sheet open={mobileRoomsOpen} onOpenChange={setMobileRoomsOpen}>
-        <SheetContent side="left" className="w-[min(88vw,320px)] p-0">
+        <SheetContent
+          side="left"
+          className="w-[min(88vw,320px)] max-w-full p-0 pt-[env(safe-area-inset-top)]"
+        >
           <SheetHeader className="sr-only">
-            <SheetTitle>对话列表</SheetTitle>
-            <SheetDescription>选择或创建图片对话</SheetDescription>
+            <SheetTitle>{t("rooms.sheetTitle")}</SheetTitle>
+            <SheetDescription>{t("rooms.sheetDescription")}</SheetDescription>
           </SheetHeader>
           <RoomSidebar {...roomSidebarProps} />
         </SheetContent>

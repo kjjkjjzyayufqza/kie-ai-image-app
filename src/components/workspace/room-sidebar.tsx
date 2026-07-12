@@ -6,6 +6,7 @@ import { Check, MessageSquare, Pencil, Plus, Search, Trash2, X } from "lucide-re
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { useI18n } from "@/i18n/i18n-provider";
 import type { Room } from "@/lib/domain";
 import { cn } from "@/lib/utils";
 
@@ -26,90 +27,101 @@ export function RoomSidebar({
   onRename,
   onDelete,
 }: RoomSidebarProps) {
+  const { t } = useI18n();
   const [query, setQuery] = useState("");
   const [editingId, setEditingId] = useState<string>();
-  const [editingTitle, setEditingTitle] = useState("");
-  const filteredRooms = useMemo(() => {
-    const normalizedQuery = query.trim().toLowerCase();
-    return rooms.filter(
-      (room) =>
-        !room.deletedAt &&
-        (!normalizedQuery || room.title.toLowerCase().includes(normalizedQuery)),
-    );
+  const [draftTitle, setDraftTitle] = useState("");
+
+  const visibleRooms = useMemo(() => {
+    const active = rooms.filter((room) => !room.deletedAt);
+    const normalized = query.trim().toLowerCase();
+    if (!normalized) return active;
+    return active.filter((room) => room.title.toLowerCase().includes(normalized));
   }, [query, rooms]);
 
   const beginRename = (room: Room) => {
     setEditingId(room.id);
-    setEditingTitle(room.title);
+    setDraftTitle(room.title);
   };
 
   const commitRename = () => {
-    if (editingId && editingTitle.trim()) {
-      onRename(editingId, editingTitle);
-    }
+    if (!editingId) return;
+    onRename(editingId, draftTitle);
     setEditingId(undefined);
   };
 
   return (
     <aside className="flex h-full min-h-0 flex-col bg-neutral-50/80">
       <div className="space-y-2 border-b p-3">
-        <Button className="w-full justify-start" onClick={onCreate}>
+        <Button
+          className="w-full justify-start active:scale-[0.98]"
+          onClick={onCreate}
+        >
           <Plus />
-          新建对话
+          {t("rooms.newChat")}
         </Button>
         <div className="relative">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
           <Input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="搜索对话"
+            placeholder={t("rooms.searchPlaceholder")}
             className="pl-8"
+            aria-label={t("rooms.searchAria")}
           />
         </div>
       </div>
 
       <ScrollArea className="min-h-0 flex-1">
-        <div className="space-y-1 p-2">
-          {filteredRooms.map((room) => {
-            const isActive = room.id === currentRoomId;
+        <div className="space-y-1 p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
+          {visibleRooms.map((room) => {
+            const selected = room.id === currentRoomId;
             return (
               <div
                 key={room.id}
                 className={cn(
-                  "group flex min-h-10 items-center gap-1 rounded-md px-1",
-                  isActive ? "bg-white shadow-xs ring-1 ring-black/5" : "hover:bg-white/80",
+                  "group flex min-h-11 items-center gap-1 rounded-md px-1 transition-colors duration-150",
+                  selected
+                    ? "bg-white shadow-xs ring-1 ring-black/5"
+                    : "hover:bg-white/80",
                 )}
               >
                 {editingId === room.id ? (
                   <>
                     <Input
-                      autoFocus
-                      value={editingTitle}
-                      onChange={(event) => setEditingTitle(event.target.value)}
+                      value={draftTitle}
+                      onChange={(event) => setDraftTitle(event.target.value)}
                       onKeyDown={(event) => {
                         if (event.key === "Enter") commitRename();
                         if (event.key === "Escape") setEditingId(undefined);
                       }}
                       className="h-8 min-w-0 flex-1"
+                      aria-label={t("rooms.roomNameAria")}
                     />
-                    <Button size="icon-sm" variant="ghost" onClick={commitRename}>
+                    <Button
+                      size="icon-sm"
+                      variant="ghost"
+                      className="active:scale-[0.98]"
+                      onClick={commitRename}
+                    >
                       <Check />
-                      <span className="sr-only">保存名称</span>
+                      <span className="sr-only">{t("rooms.saveName")}</span>
                     </Button>
                     <Button
                       size="icon-sm"
                       variant="ghost"
+                      className="active:scale-[0.98]"
                       onClick={() => setEditingId(undefined)}
                     >
                       <X />
-                      <span className="sr-only">取消重命名</span>
+                      <span className="sr-only">{t("rooms.cancelRename")}</span>
                     </Button>
                   </>
                 ) : (
                   <>
                     <button
                       type="button"
-                      className="flex min-w-0 flex-1 items-center gap-2 px-2 py-2 text-left text-sm"
+                      className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-2.5 text-left text-sm active:bg-white/90"
                       onClick={() => onSelect(room.id)}
                     >
                       <MessageSquare className="size-4 shrink-0 text-muted-foreground" />
@@ -118,29 +130,29 @@ export function RoomSidebar({
                     <Button
                       size="icon-sm"
                       variant="ghost"
-                      className="opacity-0 group-focus-within:opacity-100 group-hover:opacity-100"
+                      className="opacity-100 active:scale-[0.98] sm:opacity-0 sm:group-focus-within:opacity-100 sm:group-hover:opacity-100"
                       onClick={() => beginRename(room)}
                     >
                       <Pencil />
-                      <span className="sr-only">重命名</span>
+                      <span className="sr-only">{t("rooms.rename")}</span>
                     </Button>
                     <Button
                       size="icon-sm"
                       variant="ghost"
-                      className="opacity-0 group-focus-within:opacity-100 group-hover:opacity-100"
+                      className="opacity-100 active:scale-[0.98] sm:opacity-0 sm:group-focus-within:opacity-100 sm:group-hover:opacity-100"
                       onClick={() => onDelete(room.id)}
                     >
                       <Trash2 />
-                      <span className="sr-only">删除对话</span>
+                      <span className="sr-only">{t("rooms.delete")}</span>
                     </Button>
                   </>
                 )}
               </div>
             );
           })}
-          {filteredRooms.length === 0 ? (
+          {visibleRooms.length === 0 ? (
             <p className="px-3 py-8 text-center text-xs text-muted-foreground">
-              没有匹配的对话
+              {query.trim() ? t("rooms.noMatches") : t("rooms.empty")}
             </p>
           ) : null}
         </div>

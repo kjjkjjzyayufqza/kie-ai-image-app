@@ -7,7 +7,9 @@ import {
   fetchKieJson,
   jsonResponse,
   ProxyRequestError,
+  readJsonBody,
 } from "@/lib/server/kie-proxy";
+import { runWithRequestMessages, t } from "@/lib/server/request-messages";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -19,23 +21,29 @@ const createResponseSchema = z.object({
 });
 
 export async function POST(request: Request) {
-  try {
-    const apiKey = authorizeProxyRequest(request);
-    const input = generationRequestSchema.parse(await request.json());
-    const upstream = createResponseSchema.parse(
-      await fetchKieJson("/api/v1/jobs/createTask", apiKey, {
-        method: "POST",
-        body: toKieCreatePayload(input),
-        timeoutMs: 30_000,
-      }),
-    );
+  return runWithRequestMessages(request, async () => {
+    try {
+      const apiKey = authorizeProxyRequest(request);
+      const input = generationRequestSchema.parse(await readJsonBody(request));
+      const upstream = createResponseSchema.parse(
+        await fetchKieJson("/api/v1/jobs/createTask", apiKey, {
+          method: "POST",
+          body: toKieCreatePayload(input),
+          timeoutMs: 30_000,
+        }),
+      );
 
-    if (upstream.code !== 200) {
-      throw new ProxyRequestError("TASK_CREATE_FAILED", 502, "Kie 未能创建任务。");
+      if (upstream.code !== 200) {
+        throw new ProxyRequestError(
+          "TASK_CREATE_FAILED",
+          502,
+          t("errors.taskCreateFailed"),
+        );
+      }
+
+      return jsonResponse({ ok: true, data: { taskId: upstream.data.taskId } });
+    } catch (error) {
+      return errorResponse(error);
     }
-
-    return jsonResponse({ ok: true, data: { taskId: upstream.data.taskId } });
-  } catch (error) {
-    return errorResponse(error);
-  }
+  });
 }

@@ -28,26 +28,24 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { ImagePreviewDialog } from "@/components/workspace/image-preview-dialog";
+import { ImageLoadFrame } from "@/components/workspace/ui-states";
 import type { Asset, GenerationTask } from "@/lib/domain";
 import { copyText, openExternalUrl } from "@/lib/browser-actions";
 import { fetchKieDownloadUrl } from "@/lib/kie-client";
+import { estimateGptImage2Credits } from "@/lib/model-registry";
 import {
   markAssetAvailable,
   markAssetLoadError,
   requestTaskRefresh,
   retryGenerationTask,
 } from "@/lib/workspace-service";
+import { cn } from "@/lib/utils";
+import { useI18n } from "@/i18n/i18n-provider";
 
 interface TaskCardProps {
   task: GenerationTask;
@@ -56,19 +54,20 @@ interface TaskCardProps {
   keyFingerprint: string;
 }
 
-const activeLabels: Partial<Record<GenerationTask["status"], string>> = {
-  queued: "等待提交",
-  submitting: "正在提交",
-  waiting: "等待处理",
-  queuing: "队列中",
-  generating: "生成中",
-  stale: "已暂停轮询",
-};
-
 export function TaskCard({ task, asset, apiKey, keyFingerprint }: TaskCardProps) {
+  const { t } = useI18n();
+  const activeLabels: Partial<Record<GenerationTask["status"], string>> = {
+    queued: t("queue.status.queued"),
+    submitting: t("queue.status.submitting"),
+    waiting: t("queue.status.waiting"),
+    queuing: t("queue.status.queuing"),
+    generating: t("queue.status.generating"),
+    stale: t("queue.status.stale"),
+  };
   const [previewOpen, setPreviewOpen] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [retryConfirmOpen, setRetryConfirmOpen] = useState(false);
+  const [imageLoaded, setImageLoaded] = useState(false);
   const isActive = Boolean(activeLabels[task.status]);
 
   const download = async () => {
@@ -78,7 +77,7 @@ export function TaskCard({ task, asset, apiKey, keyFingerprint }: TaskCardProps)
       const url = await fetchKieDownloadUrl(apiKey, asset.url);
       openExternalUrl(url);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "下载链接获取失败。");
+      toast.error(error instanceof Error ? error.message : t("task.downloadLinkFailed"));
     } finally {
       setDownloading(false);
     }
@@ -87,71 +86,98 @@ export function TaskCard({ task, asset, apiKey, keyFingerprint }: TaskCardProps)
   return (
     <article
       data-testid="task-card"
-      className="group relative min-w-0 overflow-hidden rounded-lg border bg-white"
+      className="group relative min-w-0 overflow-hidden rounded-lg border bg-white transition-shadow duration-200 hover:shadow-sm"
     >
       <div className="relative aspect-square bg-neutral-100">
         {task.status === "success" && asset?.isRenderable ? (
           asset.availability === "load-error" ? (
             <StatePanel
               icon={<ImageOff />}
-              title="暂时无法加载"
-              detail="图片 URL 可能仍然有效"
+              title={t("task.loadErrorTitle")}
+              detail={t("task.loadErrorDetail")}
               action={
                 <Button
                   size="sm"
                   variant="outline"
-                  onClick={() => void requestTaskRefresh(task.localTaskId)}
+                  className="active:scale-[0.98]"
+                  onClick={() => {
+                    setImageLoaded(false);
+                    void requestTaskRefresh(task.localTaskId);
+                  }}
                 >
                   <RefreshCw />
-                  重试
+                  {t("common.retry")}
                 </Button>
               }
             />
           ) : (
-            // Kie result URLs are rendered directly and never pass through Next Image.
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={asset.url}
-              alt={`生成结果 ${task.batchIndex + 1}`}
-              loading="lazy"
-              referrerPolicy="no-referrer"
-              className="size-full object-cover"
-              onLoad={() => void markAssetAvailable(asset.id)}
-              onError={() => void markAssetLoadError(asset.id)}
-            />
+            <ImageLoadFrame loaded={imageLoaded || asset.availability === "available"}>
+              {/* Kie result URLs are rendered directly and never pass through Next Image. */}
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={asset.url}
+                alt={t("task.resultAlt", { index: task.batchIndex + 1 })}
+                loading="lazy"
+                referrerPolicy="no-referrer"
+                className={cn(
+                  "size-full object-cover transition-opacity duration-300",
+                  imageLoaded || asset.availability === "available"
+                    ? "opacity-100"
+                    : "opacity-0",
+                )}
+                onLoad={() => {
+                  setImageLoaded(true);
+                  void markAssetAvailable(asset.id);
+                }}
+                onError={() => {
+                  setImageLoaded(false);
+                  void markAssetLoadError(asset.id);
+                }}
+              />
+            </ImageLoadFrame>
           )
         ) : task.status === "success" && asset && !asset.isRenderable ? (
           <StatePanel
             icon={<ShieldX />}
-            title="结果域名未验证"
-            detail="URL 已保留，暂不渲染"
+            title={t("task.domainUnverifiedTitle")}
+            detail={t("task.domainUnverifiedDetail")}
           />
         ) : task.status === "fail" ? (
           <StatePanel
             icon={<AlertTriangle className="text-red-600" />}
-            title="生成失败"
-            detail={task.failureMessage ?? "Kie 未返回图片"}
+            title={t("task.failTitle")}
+            detail={task.failureMessage ?? t("task.failDetailFallback")}
             action={
-              <Button size="sm" variant="outline" onClick={() => setRetryConfirmOpen(true)}>
+              <Button
+                size="sm"
+                variant="outline"
+                className="active:scale-[0.98]"
+                onClick={() => setRetryConfirmOpen(true)}
+              >
                 <RefreshCw />
-                重新生成
+                {t("task.regenerate")}
               </Button>
             }
           />
         ) : task.status === "unknown" ? (
           <StatePanel
             icon={<AlertTriangle className="text-amber-600" />}
-            title="提交结果未知"
-            detail="不会自动重试，以免重复扣费"
+            title={t("task.unknownTitle")}
+            detail={t("task.unknownDetail")}
             action={
-              <Button size="sm" variant="outline" onClick={() => setRetryConfirmOpen(true)}>
+              <Button
+                size="sm"
+                variant="outline"
+                className="active:scale-[0.98]"
+                onClick={() => setRetryConfirmOpen(true)}
+              >
                 <RefreshCw />
-                创建新任务
+                {t("task.createNewTask")}
               </Button>
             }
           />
         ) : task.status === "canceled-local" ? (
-          <StatePanel icon={<Clock3 />} title="已取消" detail="任务未提交到 Kie" />
+          <StatePanel icon={<Clock3 />} title={t("task.canceledTitle")} detail={t("task.canceledDetail")} />
         ) : (
           <StatePanel
             icon={
@@ -161,83 +187,82 @@ export function TaskCard({ task, asset, apiKey, keyFingerprint }: TaskCardProps)
                 <Clock3 />
               )
             }
-            title={activeLabels[task.status] ?? "处理中"}
-            detail={`第 ${task.batchIndex + 1} 张`}
+            title={activeLabels[task.status] ?? t("task.processing")}
+            detail={t("task.imageIndex", { index: task.batchIndex + 1 })}
+            progress={isActive}
           />
         )}
 
         <Badge
           variant="secondary"
-          className="absolute left-2 top-2 bg-white/90 tabular-nums shadow-xs"
+          className="absolute left-1.5 top-1.5 bg-white/90 tabular-nums shadow-xs sm:left-2 sm:top-2"
         >
           {task.batchIndex + 1}
         </Badge>
 
         {asset?.isRenderable && asset.availability !== "load-error" ? (
-          <div className="absolute right-2 top-2 flex gap-1 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
-            <IconAction label="预览" onClick={() => setPreviewOpen(true)}>
+          <div className="absolute right-1.5 top-1.5 flex gap-1 opacity-100 transition-opacity sm:right-2 sm:top-2 sm:opacity-0 sm:group-focus-within:opacity-100 sm:group-hover:opacity-100">
+            <IconAction label={t("common.preview")} onClick={() => setPreviewOpen(true)}>
               <Expand />
             </IconAction>
             <IconAction
-              label="复制 URL"
+              label={t("common.copyUrl")}
               onClick={() =>
-                void copyText(asset.url).then(() => toast.success("已复制图片 URL"))
+                void copyText(asset.url).then(() => toast.success(t("common.copiedImageUrl")))
               }
             >
               <Copy />
             </IconAction>
-            <IconAction label="下载" disabled={downloading} onClick={download}>
+            <IconAction label={t("common.download")} disabled={downloading} onClick={download}>
               {downloading ? <LoaderCircle className="animate-spin" /> : <Download />}
             </IconAction>
           </div>
         ) : null}
       </div>
 
-      <div className="flex h-9 items-center justify-between gap-2 border-t px-2.5 text-[11px] text-muted-foreground">
+      <div className="flex h-9 items-center justify-between gap-1.5 border-t px-2 text-[11px] text-muted-foreground sm:gap-2 sm:px-2.5">
         <span className="truncate">{task.requestSnapshot.resolution}</span>
         <span className="truncate">{task.requestSnapshot.aspectRatio}</span>
-        <span className="truncate">{formatTaskState(task.status)}</span>
+        <span className="truncate tabular-nums">
+          {task.creditsConsumed !== undefined
+            ? `${task.creditsConsumed} credits`
+            : t("task.estimatedCredits", { credits: estimateGptImage2Credits(task.requestSnapshot.resolution) })}
+        </span>
       </div>
 
       {asset?.isRenderable ? (
-        <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
-          <DialogContent className="max-h-[92dvh] max-w-[min(92vw,1100px)] bg-black p-2">
-            <DialogHeader className="sr-only">
-              <DialogTitle>图片预览</DialogTitle>
-              <DialogDescription>生成结果大图预览</DialogDescription>
-            </DialogHeader>
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src={asset.url}
-              alt={`生成结果 ${task.batchIndex + 1} 大图`}
-              referrerPolicy="no-referrer"
-              className="max-h-[calc(92dvh-1rem)] w-full object-contain"
-            />
-          </DialogContent>
-        </Dialog>
+        <ImagePreviewDialog
+          open={previewOpen}
+          onOpenChange={setPreviewOpen}
+          src={asset.url}
+          alt={t("task.resultLargeAlt", { index: task.batchIndex + 1 })}
+          title={t("task.resultTitle", { index: task.batchIndex + 1 })}
+        />
       ) : null}
 
       <AlertDialog open={retryConfirmOpen} onOpenChange={setRetryConfirmOpen}>
-        <AlertDialogContent>
+        <AlertDialogContent className="max-w-[min(100vw-1.5rem,28rem)]">
           <AlertDialogHeader>
-            <AlertDialogMedia><AlertTriangle /></AlertDialogMedia>
-            <AlertDialogTitle>创建新的生成任务？</AlertDialogTitle>
+            <AlertDialogMedia>
+              <AlertTriangle />
+            </AlertDialogMedia>
+            <AlertDialogTitle>{t("task.retryTitle")}</AlertDialogTitle>
             <AlertDialogDescription>
-              原任务保持不变，新任务会再次调用 Kie 并可能再次消耗 credits。
+              {t("task.retryDescription")}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
             <AlertDialogAction
               onClick={() => {
                 void retryGenerationTask(task.localTaskId, keyFingerprint)
-                  .then(() => toast.success("已创建新的重试任务"))
+                  .then(() => toast.success(t("task.retryCreated")))
                   .catch((error: unknown) =>
-                    toast.error(error instanceof Error ? error.message : "重试失败。"),
+                    toast.error(error instanceof Error ? error.message : t("task.retryFailed")),
                   );
               }}
             >
-              确认创建
+              {t("task.confirmCreate")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -251,18 +276,29 @@ function StatePanel({
   title,
   detail,
   action,
+  progress,
 }: {
   icon: React.ReactNode;
   title: string;
   detail: string;
   action?: React.ReactNode;
+  progress?: boolean;
 }) {
   return (
-    <div className="flex size-full flex-col items-center justify-center gap-2 p-4 text-center">
+    <div className="relative flex size-full flex-col items-center justify-center gap-2 p-3 text-center sm:p-4">
       <span className="text-muted-foreground [&_svg]:size-5">{icon}</span>
       <p className="text-sm font-medium">{title}</p>
       <p className="line-clamp-2 text-xs text-muted-foreground">{detail}</p>
       {action}
+      {progress ? (
+        <div
+          className="absolute inset-x-0 bottom-0 h-0.5 overflow-hidden bg-neutral-200/80"
+          role="progressbar"
+          aria-label={title}
+        >
+          <div className="ui-progress-bar h-full w-1/2 bg-blue-600/80" />
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -285,7 +321,7 @@ function IconAction({
           <Button
             size="icon-sm"
             variant="secondary"
-            className="bg-white/90 shadow-xs"
+            className="bg-white/90 shadow-xs active:scale-[0.98]"
             onClick={onClick}
             disabled={disabled}
           />
@@ -297,12 +333,4 @@ function IconAction({
       <TooltipContent>{label}</TooltipContent>
     </Tooltip>
   );
-}
-
-function formatTaskState(status: GenerationTask["status"]): string {
-  if (status === "success") return "完成";
-  if (status === "fail") return "失败";
-  if (status === "unknown") return "未知";
-  if (status === "canceled-local") return "取消";
-  return activeLabels[status] ?? status;
 }

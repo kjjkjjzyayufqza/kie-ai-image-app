@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { POST as createTask } from "@/app/api/kie/tasks/route";
+import { POST as getDownloadUrl } from "@/app/api/kie/download-url/route";
 import { POST as queryTask } from "@/app/api/kie/task-status/route";
 
 const apiKey = "test_key_12345678901234567890";
@@ -43,6 +44,47 @@ describe("Kie proxy routes", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("rejects a browser request marked as cross-site", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const request = makeRequest("/api/kie/tasks", {});
+    request.headers.set("Sec-Fetch-Site", "cross-site");
+
+    const response = await createTask(request);
+
+    expect(response.status).toBe(403);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects an oversized JSON body before parsing or proxying it", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const request = makeRequest("/api/kie/tasks", {});
+    request.headers.set("Content-Length", "256001");
+
+    const response = await createTask(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(413);
+    expect(payload.error.code).toBe("REQUEST_TOO_LARGE");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("stops reading an oversized body when content length is absent", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const request = makeRequest("/api/kie/tasks", {
+      prompt: "x".repeat(256_001),
+    });
+
+    const response = await createTask(request);
+    const payload = await response.json();
+
+    expect(response.status).toBe(413);
+    expect(payload.error.code).toBe("REQUEST_TOO_LARGE");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("forwards only the validated GPT Image 2 payload", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       Response.json({ code: 200, msg: "success", data: { taskId: "task_123" } }),
@@ -73,6 +115,28 @@ describe("Kie proxy routes", () => {
         resolution: "2K",
       },
     });
+  });
+
+  it("stops reading an oversized response from Kie", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response("x".repeat(1_000_001)));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await createTask(
+      makeRequest("/api/kie/tasks", {
+        model: "gpt-image-2-text-to-image",
+        mode: "text-to-image",
+        prompt: "test",
+        aspectRatio: "auto",
+        resolution: "1K",
+        inputUrls: [],
+      }),
+    );
+    const payload = await response.json();
+
+    expect(response.status).toBe(502);
+    expect(payload.error.code).toBe("UPSTREAM_RESPONSE_TOO_LARGE");
   });
 
   it("normalizes allowed and unknown result hosts without fetching images", async () => {
@@ -107,5 +171,25 @@ describe("Kie proxy routes", () => {
       { url: "https://cdn.example.com/generated.png", isRenderable: false },
     ]);
     expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a download URL returned on an unapproved host", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      Response.json({
+        code: 200,
+        data: "https://phishing.example/download.png",
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await getDownloadUrl(
+      makeRequest("/api/kie/download-url", {
+        url: "https://tempfile.redpandaai.co/generated.png",
+      }),
+    );
+    const payload = await response.json();
+
+    expect(response.status).toBe(502);
+    expect(payload.error.code).toBe("DOWNLOAD_URL_INVALID");
   });
 });

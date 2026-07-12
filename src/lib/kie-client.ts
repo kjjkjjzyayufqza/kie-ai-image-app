@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import type { GenerationRequest, KieTaskResult, ReferenceUpload } from "@/lib/domain";
+import { t } from "@/i18n/runtime";
 import { isRenderableKieUrl } from "@/lib/kie-urls";
 
 const uploadResponseSchema = z.object({
@@ -121,13 +122,13 @@ export async function uploadReferenceImage(
       },
     );
   } catch {
-    throw new KieClientError("UPLOAD_FAILED", "参考图上传失败。");
+    throw new KieClientError("UPLOAD_FAILED", t("errors.uploadFailed"));
   }
 
   if (!response.ok) {
     throw new KieClientError(
       response.status === 401 ? "KEY_INVALID" : "UPLOAD_FAILED",
-      response.status === 401 ? "Kie API Key 无效。" : "参考图上传失败。",
+      response.status === 401 ? t("errors.keyInvalid") : t("errors.uploadFailed"),
     );
   }
 
@@ -136,7 +137,7 @@ export async function uploadReferenceImage(
   if (!parsed.success || !temporaryUrl || !isRenderableKieUrl(temporaryUrl)) {
     throw new KieClientError(
       "UPLOAD_RESPONSE_INVALID",
-      "Kie 返回了未验证的参考图 URL。",
+      t("errors.unverifiedReferenceUrl"),
     );
   }
 
@@ -178,7 +179,7 @@ async function postKie(
       signal: AbortSignal.timeout(timeoutMs),
     });
   } catch {
-    throw new KieClientError("NETWORK_ERROR", "网络请求失败，任务状态可能未知。");
+    throw new KieClientError("NETWORK_ERROR", t("errors.networkUnknown"));
   }
 
   const payload = (await response.json().catch(() => null)) as {
@@ -187,7 +188,7 @@ async function postKie(
   if (!response.ok) {
     throw new KieClientError(
       payload?.error?.code ?? "REQUEST_FAILED",
-      payload?.error?.message ?? "请求失败。",
+      payload?.error?.message ?? t("errors.requestFailed"),
     );
   }
   return payload;
@@ -196,7 +197,7 @@ async function postKie(
 async function validateImageFile(file: File): Promise<string> {
   const maxBytes = 30 * 1024 * 1024;
   if (file.size <= 0 || file.size > maxBytes) {
-    throw new KieClientError("UPLOAD_SIZE_INVALID", "单张参考图必须小于 30 MB。");
+    throw new KieClientError("UPLOAD_SIZE_INVALID", t("errors.uploadSizeInvalid"));
   }
 
   const header = new Uint8Array(await file.slice(0, 16).arrayBuffer());
@@ -204,7 +205,7 @@ async function validateImageFile(file: File): Promise<string> {
   if (!mime || file.type !== mime) {
     throw new KieClientError(
       "UPLOAD_TYPE_INVALID",
-      "仅支持内容有效的 JPEG、PNG 或 WEBP 图片。",
+      t("errors.uploadTypeInvalid"),
     );
   }
   return mime;

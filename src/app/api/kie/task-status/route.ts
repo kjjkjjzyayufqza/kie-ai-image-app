@@ -7,14 +7,18 @@ import {
   fetchKieJson,
   jsonResponse,
   ProxyRequestError,
+  readJsonBody,
 } from "@/lib/server/kie-proxy";
+import { runWithRequestMessages, t } from "@/lib/server/request-messages";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-const requestSchema = z.object({
-  taskId: z.string().min(1).max(256).regex(/^[A-Za-z0-9_-]+$/),
-});
+const requestSchema = z
+  .object({
+    taskId: z.string().min(1).max(256).regex(/^[A-Za-z0-9_-]+$/),
+  })
+  .strict();
 
 const taskStateSchema = z.enum([
   "waiting",
@@ -39,42 +43,44 @@ const responseSchema = z.object({
 const resultSchema = z.object({ resultUrls: z.array(z.string()).max(16) });
 
 export async function POST(request: Request) {
-  try {
-    const apiKey = authorizeProxyRequest(request);
-    const { taskId } = requestSchema.parse(await request.json());
-    const upstream = responseSchema.parse(
-      await fetchKieJson(
-        `/api/v1/jobs/recordInfo?taskId=${encodeURIComponent(taskId)}`,
-        apiKey,
-      ),
-    );
-    if (upstream.data.taskId !== taskId) {
-      throw new ProxyRequestError(
-        "TASK_ID_MISMATCH",
-        502,
-        "Kie 返回了不匹配的任务记录。",
+  return runWithRequestMessages(request, async () => {
+    try {
+      const apiKey = authorizeProxyRequest(request);
+      const { taskId } = requestSchema.parse(await readJsonBody(request));
+      const upstream = responseSchema.parse(
+        await fetchKieJson(
+          `/api/v1/jobs/recordInfo?taskId=${encodeURIComponent(taskId)}`,
+          apiKey,
+        ),
       );
-    }
-    const resultUrls = parseResultUrls(upstream.data.resultJson);
+      if (upstream.data.taskId !== taskId) {
+        throw new ProxyRequestError(
+          "TASK_ID_MISMATCH",
+          502,
+          t("errors.taskMismatch"),
+        );
+      }
+      const resultUrls = parseResultUrls(upstream.data.resultJson);
 
-    return jsonResponse({
-      ok: true,
-      data: {
-        remoteTaskId: upstream.data.taskId,
-        state: upstream.data.state,
-        resultUrls: resultUrls.map((url) => ({
-          url,
-          isRenderable: isRenderableKieUrl(url),
-        })),
-        failCode: upstream.data.failCode || undefined,
-        failMessage: upstream.data.failMsg || undefined,
-        creditsConsumed: upstream.data.creditsConsumed ?? undefined,
-        completedAt: upstream.data.completeTime ?? undefined,
-      },
-    });
-  } catch (error) {
-    return errorResponse(error);
-  }
+      return jsonResponse({
+        ok: true,
+        data: {
+          remoteTaskId: upstream.data.taskId,
+          state: upstream.data.state,
+          resultUrls: resultUrls.map((url) => ({
+            url,
+            isRenderable: isRenderableKieUrl(url),
+          })),
+          failCode: upstream.data.failCode || undefined,
+          failMessage: upstream.data.failMsg || undefined,
+          creditsConsumed: upstream.data.creditsConsumed ?? undefined,
+          completedAt: upstream.data.completeTime ?? undefined,
+        },
+      });
+    } catch (error) {
+      return errorResponse(error);
+    }
+  });
 }
 
 function parseResultUrls(resultJson?: string | null): string[] {
@@ -86,7 +92,7 @@ function parseResultUrls(resultJson?: string | null): string[] {
     throw new ProxyRequestError(
       "RESULT_INVALID",
       502,
-      "Kie 返回的结果 URL 无法识别。",
+      t("errors.resultUrlUnrecognized"),
     );
   }
 }

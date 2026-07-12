@@ -17,6 +17,9 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { LocaleSwitcher } from "@/components/workspace/locale-switcher";
+import { useI18n } from "@/i18n/i18n-provider";
+import { cn } from "@/lib/utils";
 
 interface TopbarProps {
   view: "chat" | "gallery";
@@ -43,14 +46,16 @@ export function Topbar({
   onOpenQueue,
   onOpenSettings,
 }: TopbarProps) {
+  const { t } = useI18n();
+
   return (
-    <header className="flex h-14 shrink-0 items-center gap-2 border-b bg-white px-3 sm:px-4">
+    <header className="flex h-12 shrink-0 items-center gap-1.5 border-b bg-white px-2 sm:h-14 sm:gap-2 sm:px-4">
       <Button
         variant="ghost"
         size="icon"
-        className="md:hidden"
+        className="shrink-0 md:hidden"
         onClick={onOpenRooms}
-        aria-label="打开对话列表"
+        aria-label={t("topbar.openRooms")}
       >
         <Menu />
       </Button>
@@ -61,30 +66,36 @@ export function Topbar({
         </div>
         <div className="min-w-0">
           <p className="truncate text-sm font-semibold">KIE Image Workspace</p>
-          <p className="truncate text-[11px] text-muted-foreground">
-            GPT Image 2 · 浏览器本地
+          <p className="hidden truncate text-[11px] text-muted-foreground xs:block sm:block">
+            {t("topbar.subtitle")}
           </p>
         </div>
       </div>
 
-      <div className="flex items-center rounded-md border p-0.5">
+      <div className="flex shrink-0 items-center rounded-md border p-0.5">
         <Button
           variant={view === "chat" ? "secondary" : "ghost"}
           size="sm"
+          className="active:scale-[0.98]"
           onClick={() => onViewChange("chat")}
+          aria-label={t("topbar.chat")}
         >
           <MessageSquareText />
-          <span className="hidden lg:inline">对话</span>
+          <span className="hidden sm:inline">{t("topbar.chat")}</span>
         </Button>
         <Button
           variant={view === "gallery" ? "secondary" : "ghost"}
           size="sm"
+          className="active:scale-[0.98]"
           onClick={() => onViewChange("gallery")}
+          aria-label={t("topbar.gallery")}
         >
           <GalleryHorizontalEnd />
-          <span className="hidden lg:inline">图库</span>
+          <span className="hidden sm:inline">{t("topbar.gallery")}</span>
         </Button>
       </div>
+
+      <LocaleSwitcher className="hidden sm:flex" />
 
       <Tooltip>
         <TooltipTrigger
@@ -93,22 +104,38 @@ export function Topbar({
               variant="outline"
               size="sm"
               onClick={onOpenSettings}
-              className="hidden sm:inline-flex"
+              className={cn(
+                "max-w-[7.5rem] shrink-0 px-2 sm:max-w-none sm:inline-flex",
+              )}
             />
           }
         >
           {hasApiKey ? <WalletCards /> : <KeyRound />}
-          <span className="tabular-nums">
-            {credits === undefined ? "配置 Key" : credits.toLocaleString()}
+          <span className="truncate tabular-nums">
+            {credits !== undefined ? (
+              credits.toLocaleString()
+            ) : hasApiKey ? (
+              "--"
+            ) : (
+              <>
+                <span className="hidden sm:inline">{t("topbar.configureKey")}</span>
+                <span className="sm:hidden">{t("topbar.keyShort")}</span>
+              </>
+            )}
           </span>
           {creditsStale && credits !== undefined ? (
-            <span className="size-1.5 rounded-full bg-amber-500" />
+            <span
+              className="size-1.5 shrink-0 rounded-full bg-amber-500"
+              aria-label={t("topbar.creditsStale")}
+            />
           ) : null}
         </TooltipTrigger>
         <TooltipContent>
-          {credits === undefined
-            ? "配置 Kie API Key"
-            : `官方剩余 credits${creditsStale ? "（数据已过期）" : ""}`}
+          {!hasApiKey
+            ? t("topbar.configureApiKey")
+            : credits === undefined
+              ? t("topbar.creditsNotSynced")
+              : `${t("topbar.officialCreditsRemaining")}${creditsStale ? t("topbar.officialCreditsStaleSuffix") : ""}`}
         </TooltipContent>
       </Tooltip>
 
@@ -118,8 +145,9 @@ export function Topbar({
             <Button
               variant="ghost"
               size="icon"
-              className="relative"
+              className="relative shrink-0"
               onClick={onOpenQueue}
+              aria-label={t("topbar.taskQueue")}
             />
           }
         >
@@ -131,15 +159,16 @@ export function Topbar({
           ) : null}
         </TooltipTrigger>
         <TooltipContent>
-          任务队列{isLeader ? " · 当前标签负责调度" : ""}
+          {isLeader ? t("topbar.taskQueueLeader") : t("topbar.taskQueue")}
         </TooltipContent>
       </Tooltip>
 
       <Button
         variant="ghost"
         size="icon"
+        className="shrink-0"
         onClick={onOpenSettings}
-        aria-label="设置"
+        aria-label={t("common.settings")}
       >
         <Settings />
       </Button>

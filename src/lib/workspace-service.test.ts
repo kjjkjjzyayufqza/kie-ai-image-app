@@ -3,17 +3,20 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { db } from "@/lib/db";
 import {
   createRoom,
+  clearWorkspaceData,
   retryGenerationTask,
   submitGenerationBatch,
 } from "@/lib/workspace-service";
 
 describe("submitGenerationBatch", () => {
   beforeEach(async () => {
+    window.localStorage.clear();
     await db.delete();
     await db.open();
   });
 
   afterEach(async () => {
+    window.localStorage.clear();
     await db.delete();
   });
 
@@ -90,5 +93,24 @@ describe("submitGenerationBatch", () => {
     expect(retry.retryOfLocalTaskId).toBe(original.localTaskId);
     expect(retry.status).toBe("queued");
     expect((await db.tasks.get(original.localTaskId))?.status).toBe("unknown");
+  });
+
+  it("removes persisted composer drafts when clearing workspace data", async () => {
+    const room = await createRoom();
+    window.localStorage.setItem(
+      `kie-ai-workspace.composer-draft.v1:${room.id}`,
+      "persisted-draft",
+    );
+    window.localStorage.setItem("unrelated-setting", "keep");
+
+    await clearWorkspaceData();
+
+    expect(
+      window.localStorage.getItem(
+        `kie-ai-workspace.composer-draft.v1:${room.id}`,
+      ),
+    ).toBeNull();
+    expect(window.localStorage.getItem("unrelated-setting")).toBe("keep");
+    expect(await db.rooms.count()).toBe(0);
   });
 });

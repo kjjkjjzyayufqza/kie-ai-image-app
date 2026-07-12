@@ -8,8 +8,10 @@ import type {
   AssetCollection,
 } from "@/lib/domain";
 import { batchCountSchema, generationRequestSchema } from "@/lib/model-registry";
+import { isDefaultRoomTitle, t } from "@/i18n/runtime";
+import { clearComposerDrafts } from "@/lib/composer-draft";
 
-export async function createRoom(title = "新对话"): Promise<Room> {
+export async function createRoom(title = t("rooms.defaultTitle")): Promise<Room> {
   const now = Date.now();
   const room: Room = {
     id: crypto.randomUUID(),
@@ -71,7 +73,7 @@ export async function submitGenerationBatch(input: {
 }): Promise<Turn> {
   const request = generationRequestSchema.parse(input.request);
   const count = batchCountSchema.parse(input.count);
-  if (!input.keyFingerprint) throw new Error("Kie API Key is required.");
+  if (!input.keyFingerprint) throw new Error(t("errors.apiKeyRequired"));
 
   const now = Date.now();
   const turnId = crypto.randomUUID();
@@ -112,7 +114,7 @@ export async function submitGenerationBatch(input: {
     const room = await db.rooms.get(input.roomId);
     await db.rooms.update(input.roomId, {
       title:
-        room?.title === "新对话"
+        isDefaultRoomTitle(room?.title)
           ? request.prompt.replace(/\s+/g, " ").slice(0, 32)
           : room?.title,
       updatedAt: now,
@@ -228,6 +230,7 @@ export async function clearWorkspaceData(): Promise<void> {
       ]);
     },
   );
+  clearComposerDrafts();
 }
 
 export async function setAssetTags(assetId: string, tags: string[]): Promise<void> {
@@ -239,7 +242,7 @@ export async function setAssetTags(assetId: string, tags: string[]): Promise<voi
 
 export async function createAssetCollection(name: string): Promise<AssetCollection> {
   const normalizedName = name.trim().slice(0, 40);
-  if (!normalizedName) throw new Error("集合名称不能为空。");
+  if (!normalizedName) throw new Error(t("errors.collectionNameEmpty"));
   const collection: AssetCollection = {
     id: crypto.randomUUID(),
     name: normalizedName,
@@ -268,13 +271,13 @@ export async function retryGenerationTask(
   return db.transaction("rw", db.tasks, db.turns, async () => {
     const original = await db.tasks.get(localTaskId);
     if (!original || !["unknown", "fail"].includes(original.status)) {
-      throw new Error("该任务当前不能重新生成。");
+      throw new Error(t("errors.cannotRegenerate"));
     }
     if (original.keyFingerprint !== keyFingerprint) {
-      throw new Error("请切换回创建原任务的 Kie API Key。");
+      throw new Error(t("errors.switchBackKey"));
     }
     const turn = await db.turns.get(original.turnId);
-    if (!turn) throw new Error("原对话记录不存在。");
+    if (!turn) throw new Error(t("errors.originalTurnMissing"));
     const siblings = await db.tasks.where("turnId").equals(original.turnId).toArray();
     const now = Date.now();
     const retryTask: GenerationTask = {

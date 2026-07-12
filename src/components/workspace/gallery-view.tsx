@@ -42,6 +42,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  EmptyState,
+  ImageLoadFrame,
+} from "@/components/workspace/ui-states";
+import { ImagePreviewDialog } from "@/components/workspace/image-preview-dialog";
 import type {
   Asset,
   AssetCollection,
@@ -59,6 +64,7 @@ import {
   toggleAssetCollection,
 } from "@/lib/workspace-service";
 import { cn } from "@/lib/utils";
+import { useI18n } from "@/i18n/i18n-provider";
 
 interface GalleryViewProps {
   assets: Asset[];
@@ -77,6 +83,7 @@ export function GalleryView({
   collections,
   apiKey,
 }: GalleryViewProps) {
+  const { t } = useI18n();
   const [query, setQuery] = useState("");
   const [favoritesOnly, setFavoritesOnly] = useState(false);
   const [availability, setAvailability] = useState<AvailabilityFilter>("all");
@@ -86,6 +93,7 @@ export function GalleryView({
   const [visibleLimit, setVisibleLimit] = useState(60);
   const [previewAsset, setPreviewAsset] = useState<Asset>();
   const [downloadingId, setDownloadingId] = useState<string>();
+  const [loadedIds, setLoadedIds] = useState<Set<string>>(() => new Set());
   const tasksById = useMemo(
     () => new Map(tasks.map((task) => [task.localTaskId, task])),
     [tasks],
@@ -94,6 +102,12 @@ export function GalleryView({
     () => new Map(turns.map((turn) => [turn.id, turn])),
     [turns],
   );
+  const hasActiveFilters =
+    favoritesOnly ||
+    availability !== "all" ||
+    collectionFilter !== "all" ||
+    query.trim().length > 0;
+
   const filteredAssets = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
     return assets
@@ -123,24 +137,24 @@ export function GalleryView({
 
   const downloadAsset = async (asset: Asset) => {
     if (!apiKey) {
-      toast.error("请先配置 Kie API Key。");
+      toast.error(t("gallery.needApiKey"));
       return;
     }
     setDownloadingId(asset.id);
     try {
       openExternalUrl(await fetchKieDownloadUrl(apiKey, asset.url));
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "下载失败。");
+      toast.error(error instanceof Error ? error.message : t("gallery.downloadFailed"));
     } finally {
       setDownloadingId(undefined);
     }
   };
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto">
-      <div className="mx-auto max-w-[1600px] p-4 sm:p-6">
-        <div className="mb-5 flex flex-wrap items-center gap-2">
-          <div className="relative min-w-52 flex-1 sm:max-w-sm">
+    <div className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto">
+      <div className="mx-auto max-w-[1600px] p-3 pb-[max(1rem,env(safe-area-inset-bottom))] sm:p-6">
+        <div className="mb-4 flex flex-wrap items-center gap-2 sm:mb-5">
+          <div className="relative min-w-0 flex-1 basis-full sm:min-w-52 sm:basis-auto sm:max-w-sm">
             <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
             <Input
               value={query}
@@ -148,41 +162,43 @@ export function GalleryView({
                 setQuery(event.target.value);
                 setVisibleLimit(60);
               }}
-              placeholder="搜索 Prompt"
+              placeholder={t("gallery.searchPrompt")}
               className="pl-8"
             />
           </div>
           <Button
             variant={favoritesOnly ? "secondary" : "outline"}
+            size="sm"
+            className="active:scale-[0.98]"
             onClick={() => setFavoritesOnly((value) => !value)}
             aria-pressed={favoritesOnly}
           >
             <Heart className={cn(favoritesOnly && "fill-current")} />
-            收藏
+            {t("gallery.favorites")}
           </Button>
           <Select
             value={availability}
             onValueChange={(value) => setAvailability(value as AvailabilityFilter)}
           >
-            <SelectTrigger aria-label="图片可用状态">
+            <SelectTrigger size="sm" aria-label={t("gallery.availabilityAria")} className="w-auto max-w-[9.5rem]">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">全部状态</SelectItem>
-              <SelectItem value="available">可用</SelectItem>
-              <SelectItem value="load-error">暂时无法加载</SelectItem>
-              <SelectItem value="unavailable">已失效</SelectItem>
+              <SelectItem value="all">{t("gallery.allStatuses")}</SelectItem>
+              <SelectItem value="available">{t("gallery.available")}</SelectItem>
+              <SelectItem value="load-error">{t("gallery.loadError")}</SelectItem>
+              <SelectItem value="unavailable">{t("gallery.unavailable")}</SelectItem>
             </SelectContent>
           </Select>
           <Select
             value={collectionFilter}
             onValueChange={(value) => value && setCollectionFilter(value)}
           >
-            <SelectTrigger aria-label="图库集合">
+            <SelectTrigger size="sm" aria-label={t("gallery.collectionsAria")} className="w-auto max-w-[9.5rem]">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">全部集合</SelectItem>
+              <SelectItem value="all">{t("gallery.allCollections")}</SelectItem>
               {collections.map((collection) => (
                 <SelectItem key={collection.id} value={collection.id}>
                   {collection.name}
@@ -191,87 +207,150 @@ export function GalleryView({
             </SelectContent>
           </Select>
           <Button
-            size="icon"
+            size="icon-sm"
             variant="outline"
+            className="active:scale-[0.98]"
             onClick={() => setCollectionDialogOpen(true)}
-            aria-label="新建集合"
+            aria-label={t("gallery.newCollectionAria")}
           >
             <Plus />
           </Button>
           <Badge variant="outline" className="tabular-nums">
-            {filteredAssets.length} 张
+            {t("gallery.imageCount", { count: filteredAssets.length })}
           </Badge>
         </div>
 
         {filteredAssets.length === 0 ? (
-          <div className="grid min-h-[55dvh] place-items-center">
-            <div className="text-center">
-              <div className="mx-auto mb-3 grid size-10 place-items-center rounded-md border bg-neutral-50">
-                <GalleryHorizontalEnd className="size-4 text-muted-foreground" />
-              </div>
-              <p className="text-sm font-medium">图库为空</p>
-            </div>
-          </div>
+          <EmptyState
+            icon={<GalleryHorizontalEnd />}
+            title={assets.length === 0 ? t("gallery.emptyTitle") : t("gallery.noMatchesTitle")}
+            description={
+              assets.length === 0
+                ? t("gallery.emptyDescription")
+                : hasActiveFilters
+                  ? t("gallery.noMatchesDescription")
+                  : t("gallery.noVisibleDescription")
+            }
+            action={
+              hasActiveFilters ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    setQuery("");
+                    setFavoritesOnly(false);
+                    setAvailability("all");
+                    setCollectionFilter("all");
+                  }}
+                >
+                  {t("common.clearFilters")}
+                </Button>
+              ) : undefined
+            }
+            className="min-h-[55dvh]"
+          />
         ) : (
           <>
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 sm:gap-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
               {filteredAssets.slice(0, visibleLimit).map((asset) => {
                 const task = tasksById.get(asset.localTaskId);
                 const turn = task ? turnsById.get(task.turnId) : undefined;
+                const loaded =
+                  loadedIds.has(asset.id) || asset.availability === "available";
                 return (
-                  <article key={asset.id} className="group overflow-hidden rounded-lg border bg-white">
+                  <article
+                    key={asset.id}
+                    className="group min-w-0 overflow-hidden rounded-lg border bg-white transition-shadow duration-200 hover:shadow-sm"
+                  >
                     <div className="relative aspect-square bg-neutral-100">
                       {asset.isRenderable && asset.availability !== "load-error" ? (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img
-                          src={asset.url}
-                          alt={turn?.prompt ?? "Kie 生成图片"}
-                          loading="lazy"
-                          referrerPolicy="no-referrer"
-                          className="size-full object-cover"
-                          onLoad={() => void markAssetAvailable(asset.id)}
-                          onError={() => void markAssetLoadError(asset.id)}
-                        />
+                        <ImageLoadFrame loaded={loaded}>
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={asset.url}
+                            alt={turn?.prompt ?? t("gallery.generatedAlt")}
+                            loading="lazy"
+                            referrerPolicy="no-referrer"
+                            className={cn(
+                              "size-full object-cover transition-opacity duration-300",
+                              loaded ? "opacity-100" : "opacity-0",
+                            )}
+                            onLoad={() => {
+                              setLoadedIds((current) => {
+                                const next = new Set(current);
+                                next.add(asset.id);
+                                return next;
+                              });
+                              void markAssetAvailable(asset.id);
+                            }}
+                            onError={() => void markAssetLoadError(asset.id)}
+                          />
+                        </ImageLoadFrame>
                       ) : (
-                        <div className="flex size-full flex-col items-center justify-center gap-2 p-4 text-center">
+                        <div className="flex size-full flex-col items-center justify-center gap-2 p-3 text-center sm:p-4">
                           {asset.isRenderable ? (
                             <ImageOff className="size-5 text-muted-foreground" />
                           ) : (
                             <ShieldX className="size-5 text-muted-foreground" />
                           )}
                           <p className="text-xs text-muted-foreground">
-                            {asset.isRenderable ? "暂时无法加载" : "结果域名未验证"}
+                            {asset.isRenderable
+                              ? t("gallery.loadError")
+                              : t("gallery.domainUnverified")}
                           </p>
+                          {asset.isRenderable ? (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="active:scale-[0.98]"
+                              onClick={() => {
+                                setLoadedIds((current) => {
+                                  const next = new Set(current);
+                                  next.delete(asset.id);
+                                  return next;
+                                });
+                                void markAssetAvailable(asset.id);
+                              }}
+                            >
+                              {t("common.retry")}
+                            </Button>
+                          ) : null}
                         </div>
                       )}
 
-                      <div className="absolute right-2 top-2 flex gap-1 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
+                      <div className="absolute right-1.5 top-1.5 flex gap-1 opacity-100 transition-opacity sm:right-2 sm:top-2 sm:opacity-0 sm:group-focus-within:opacity-100 sm:group-hover:opacity-100">
                         <Button
                           size="icon-sm"
                           variant="secondary"
-                          className="bg-white/90 shadow-xs"
+                          className="bg-white/90 shadow-xs active:scale-[0.98]"
                           disabled={!asset.isRenderable}
                           onClick={() => setPreviewAsset(asset)}
-                          aria-label="预览"
+                          aria-label={t("common.preview")}
                         >
                           <Expand />
                         </Button>
                         <Button
                           size="icon-sm"
                           variant="secondary"
-                          className="bg-white/90 shadow-xs"
+                          className="bg-white/90 shadow-xs active:scale-[0.98]"
                           onClick={() => void toggleAssetFavorite(asset.id)}
-                          aria-label={asset.favorite ? "取消收藏" : "收藏"}
+                          aria-label={asset.favorite ? t("gallery.unfavorite") : t("gallery.favorite")}
                         >
-                          <Heart className={cn(asset.favorite && "fill-current text-red-600")} />
+                          <Heart
+                            className={cn(
+                              asset.favorite && "fill-current text-red-600",
+                            )}
+                          />
                         </Button>
                         <Button
                           size="icon-sm"
                           variant="secondary"
-                          className="bg-white/90 shadow-xs"
-                          disabled={!asset.isRenderable || downloadingId === asset.id}
+                          className="bg-white/90 shadow-xs active:scale-[0.98]"
+                          disabled={
+                            !asset.isRenderable || downloadingId === asset.id
+                          }
                           onClick={() => void downloadAsset(asset)}
-                          aria-label="下载"
+                          aria-label={t("common.download")}
                         >
                           {downloadingId === asset.id ? (
                             <LoaderCircle className="animate-spin" />
@@ -281,12 +360,14 @@ export function GalleryView({
                         </Button>
                       </div>
                     </div>
-                    <div className="p-2.5">
+                    <div className="p-2 sm:p-2.5">
                       <p className="line-clamp-2 min-h-8 text-xs leading-4">
-                        {turn?.prompt ?? "Prompt 不可用"}
+                        {turn?.prompt ?? t("gallery.promptUnavailable")}
                       </p>
                       <div className="mt-2 flex items-center gap-1">
-                        <Badge variant="outline">{task?.requestSnapshot.resolution ?? "--"}</Badge>
+                        <Badge variant="outline">
+                          {task?.requestSnapshot.resolution ?? "--"}
+                        </Badge>
                         <span className="ml-auto text-[11px] text-muted-foreground">
                           {new Date(asset.createdAt).toLocaleDateString()}
                         </span>
@@ -295,22 +376,26 @@ export function GalleryView({
                         <Button
                           size="icon-sm"
                           variant="ghost"
+                          className="active:scale-[0.98]"
                           onClick={() =>
                             void copyText(turn?.prompt ?? "").then(() =>
-                              toast.success("已复制 Prompt"),
+                              toast.success(t("common.copiedPrompt")),
                             )
                           }
-                          aria-label="复制 Prompt"
+                          aria-label={t("common.copyPrompt")}
                         >
                           <Copy />
                         </Button>
                         <Button
                           size="icon-sm"
                           variant="ghost"
+                          className="active:scale-[0.98]"
                           onClick={() =>
-                            void copyText(asset.url).then(() => toast.success("已复制 URL"))
+                            void copyText(asset.url).then(() =>
+                              toast.success(t("common.copiedUrl")),
+                            )
                           }
-                          aria-label="复制图片 URL"
+                          aria-label={t("common.copyImageUrl")}
                         >
                           <Link2 />
                         </Button>
@@ -327,8 +412,12 @@ export function GalleryView({
 
             {visibleLimit < filteredAssets.length ? (
               <div className="mt-6 flex justify-center">
-                <Button variant="outline" onClick={() => setVisibleLimit((value) => value + 60)}>
-                  加载更多
+                <Button
+                  variant="outline"
+                  className="active:scale-[0.98]"
+                  onClick={() => setVisibleLimit((value) => value + 60)}
+                >
+                  {t("common.loadMore")}
                 </Button>
               </div>
             ) : null}
@@ -336,29 +425,19 @@ export function GalleryView({
         )}
       </div>
 
-      <Dialog open={Boolean(previewAsset)} onOpenChange={(open) => !open && setPreviewAsset(undefined)}>
-        <DialogContent className="max-h-[92dvh] max-w-[min(92vw,1100px)] bg-black p-2">
-          <DialogHeader className="sr-only">
-            <DialogTitle>图库预览</DialogTitle>
-            <DialogDescription>生成图片大图预览</DialogDescription>
-          </DialogHeader>
-          {previewAsset ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={previewAsset.url}
-              alt="生成图片大图"
-              referrerPolicy="no-referrer"
-              className="max-h-[calc(92dvh-1rem)] w-full object-contain"
-            />
-          ) : null}
-        </DialogContent>
-      </Dialog>
+      <ImagePreviewDialog
+        open={Boolean(previewAsset)}
+        onOpenChange={(open) => !open && setPreviewAsset(undefined)}
+        src={previewAsset?.url}
+        alt={t("gallery.generatedLargeAlt")}
+        title={t("gallery.previewTitle")}
+      />
 
       <Dialog open={collectionDialogOpen} onOpenChange={setCollectionDialogOpen}>
-        <DialogContent>
+        <DialogContent className="max-w-[min(100vw-1.5rem,28rem)]">
           <DialogHeader>
-            <DialogTitle>新建集合</DialogTitle>
-            <DialogDescription>集合只保存在当前浏览器。</DialogDescription>
+            <DialogTitle>{t("gallery.newCollectionTitle")}</DialogTitle>
+            <DialogDescription>{t("gallery.newCollectionDescription")}</DialogDescription>
           </DialogHeader>
           <Input
             autoFocus
@@ -370,11 +449,16 @@ export function GalleryView({
                 void saveCollection();
               }
             }}
-            placeholder="集合名称"
+            placeholder={t("gallery.collectionNamePlaceholder")}
             maxLength={40}
           />
           <div className="flex justify-end">
-            <Button onClick={() => void saveCollection()}>创建集合</Button>
+            <Button
+              className="active:scale-[0.98]"
+              onClick={() => void saveCollection()}
+            >
+              {t("gallery.createCollection")}
+            </Button>
           </div>
         </DialogContent>
       </Dialog>
@@ -386,9 +470,9 @@ export function GalleryView({
       await createAssetCollection(newCollectionName);
       setNewCollectionName("");
       setCollectionDialogOpen(false);
-      toast.success("集合已创建");
+      toast.success(t("gallery.collectionCreated"));
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "集合创建失败。");
+      toast.error(error instanceof Error ? error.message : t("gallery.collectionCreateFailed"));
     }
   }
 }
@@ -400,6 +484,7 @@ function AssetMetadataEditor({
   asset: Asset;
   collections: AssetCollection[];
 }) {
+  const { t } = useI18n();
   const [tagText, setTagText] = useState("");
 
   const addTag = async () => {
@@ -413,14 +498,19 @@ function AssetMetadataEditor({
     <Popover>
       <PopoverTrigger
         render={
-          <Button size="icon-sm" variant="ghost" aria-label="标签和集合" />
+          <Button
+            size="icon-sm"
+            variant="ghost"
+            className="active:scale-[0.98]"
+            aria-label={t("gallery.tagsAndCollections")}
+          />
         }
       >
         <Tags />
       </PopoverTrigger>
-      <PopoverContent align="start" className="w-72 space-y-4">
+      <PopoverContent align="start" className="w-[min(18rem,calc(100vw-2rem))] space-y-4">
         <div>
-          <p className="mb-2 text-xs font-medium">标签</p>
+          <p className="mb-2 text-xs font-medium">{t("gallery.tags")}</p>
           <div className="mb-2 flex flex-wrap gap-1">
             {asset.tags.map((tag) => (
               <Badge key={tag} variant="secondary" className="gap-1">
@@ -433,7 +523,7 @@ function AssetMetadataEditor({
                       asset.tags.filter((item) => item !== tag),
                     )
                   }
-                  aria-label={`删除标签 ${tag}`}
+                  aria-label={t("gallery.deleteTag", { tag })}
                 >
                   <X className="size-3" />
                 </button>
@@ -450,20 +540,25 @@ function AssetMetadataEditor({
                   void addTag();
                 }
               }}
-              placeholder="添加标签"
+              placeholder={t("gallery.addTagPlaceholder")}
               maxLength={30}
             />
-            <Button size="sm" onClick={() => void addTag()}>添加</Button>
+            <Button size="sm" onClick={() => void addTag()}>
+              {t("common.add")}
+            </Button>
           </div>
         </div>
 
         <div className="border-t pt-3">
-          <p className="mb-2 text-xs font-medium">集合</p>
+          <p className="mb-2 text-xs font-medium">{t("gallery.collections")}</p>
           <div className="max-h-36 space-y-2 overflow-y-auto">
             {collections.map((collection) => {
               const checked = asset.collectionIds.includes(collection.id);
               return (
-                <Label key={collection.id} className="flex items-center gap-2 font-normal">
+                <Label
+                  key={collection.id}
+                  className="flex items-center gap-2 font-normal"
+                >
                   <Checkbox
                     checked={checked}
                     onCheckedChange={() =>
@@ -475,7 +570,7 @@ function AssetMetadataEditor({
               );
             })}
             {collections.length === 0 ? (
-              <p className="text-xs text-muted-foreground">还没有集合</p>
+              <p className="text-xs text-muted-foreground">{t("gallery.noCollections")}</p>
             ) : null}
           </div>
         </div>

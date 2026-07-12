@@ -1,53 +1,44 @@
 # KIE Image Workspace
 
-Browser-local Next.js workspace for Kie AI image generation.
+A browser-local Next.js interface for generating images with Kie AI and GPT Image 2.
 
-## Data boundary
+![KIE Image Workspace UI](docs/kie-image-workspace.png)
 
-- No login, email identity, database, S3, or server-side image storage.
-- The Kie API Key is stored in the current origin's `localStorage`.
-- Rooms, prompts, task IDs, settings, and result URLs are stored in IndexedDB.
-- Generated image bytes are never persisted by the application.
-- Closing the page does not stop Kie. On reopen, known task IDs are queried again.
-- Clearing site data removes the local workspace. Expired Kie URLs are not recoverable.
+The workspace supports text-to-image, image-to-image, reusable chat rooms, batch
+generation from `1x` to `100x`, live task progress, credit estimates, remaining
+credit checks, large image previews, and a URL-based gallery.
 
-## Development
+## Local-First Data
+
+This app is **purely local** to the current browser and website origin:
+
+- The Kie API key is stored in `localStorage` and is sent only when calling Kie.
+- Rooms, prompts, task IDs, settings, reference metadata, and result URLs are
+  stored in browser storage (IndexedDB / localStorage).
+- Generated image files are not copied or persisted by this application. The
+  gallery renders the temporary URLs returned by Kie.
+- Clearing the browser's site data removes the local workspace. Expired Kie URLs
+  cannot be recovered by the application.
+
+## Internationalization
+
+Server-side i18n is enabled with locale-prefixed routes:
+
+- English (default): `/en`
+- Chinese: `/zh`
+
+The proxy negotiates locale from the `NEXT_LOCALE` cookie or `Accept-Language`,
+then redirects bare paths (for example `/` → `/en`). Dictionaries are loaded on
+the server and passed into the client tree.
+
+## Run Locally
 
 ```bash
 pnpm install
 pnpm dev
 ```
 
-Open <http://localhost:3000> and enter your own Kie API Key in Settings.
+Open [http://localhost:3000](http://localhost:3000), add your own Kie API key in
+Settings, and start generating.
 
-Copy `.env.example` to `.env.local` for local development. In production,
-`APP_ORIGIN` must be the exact canonical HTTPS origin. Do not place a Kie Key in
-environment variables.
-
-## Verification
-
-```bash
-pnpm lint
-pnpm typecheck
-pnpm test
-pnpm test:e2e
-pnpm run build
-```
-
-Real Kie generation and 30 MB upload smoke tests are intentionally not run by
-the automated suite because they require a user-provided Key and may consume
-credits. The browser upload path targets Kie's official temporary file endpoint.
-
-## Supported workflow
-
-- GPT Image 2 text-to-image and image-to-image.
-- Custom `1x` through `100x` batches with immediate ordered placeholders.
-- Rate-limited independent task submission and progressive result rendering.
-- Cross-tab leader election to prevent duplicate submissions.
-- Task recovery by persisted Kie task ID.
-- Official remaining credits plus browser-local usage statistics.
-- URL-only gallery with search, favorites, tags, collections, preview, and download.
-- JSON metadata export without the API Key or image bytes.
-
-The detailed design is in
-[`docs/superpowers/specs/2026-07-11-kie-ai-image-app-design.md`](docs/superpowers/specs/2026-07-11-kie-ai-image-app-design.md).
+For production, set `APP_ORIGIN` to the exact HTTPS origin of the deployment.

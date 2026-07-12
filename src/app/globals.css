@@ -137,3 +137,65 @@
   background: oklch(0.9 0 0);
   color: oklch(0.145 0 0);
 }
+
+/* Operational workspace helpers: loading chrome without layout shift */
+.ui-skeleton {
+  background-image: linear-gradient(
+    90deg,
+    oklch(0.97 0 0) 0%,
+    oklch(0.94 0 0) 45%,
+    oklch(0.97 0 0) 90%
+  );
+  background-size: 200% 100%;
+  animation: ui-shimmer 1.4s ease-in-out infinite;
+}
+
+.ui-progress-bar {
+  animation: ui-indeterminate 1.2s ease-in-out infinite;
+  transform-origin: left center;
+}
+
+@keyframes ui-shimmer {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: -100% 0;
+  }
+}
+
+@keyframes ui-indeterminate {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(300%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ui-skeleton,
+  .ui-progress-bar {
+    animation: none;
+  }
+
+  .ui-skeleton {
+    background-image: none;
+  }
+
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+
+/* Prevent accidental horizontal scroll on dense mobile chrome */
+html,
+body {
+  max-width: 100%;
+  overflow-x: hidden;
+}

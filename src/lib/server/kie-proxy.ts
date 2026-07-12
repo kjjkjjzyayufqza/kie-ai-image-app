@@ -1,8 +1,9 @@
-import "server-only";
-
 import { z } from "zod";
 
+import { t } from "@/lib/server/request-messages";
+
 const KIE_API_BASE_URL = "https://api.kie.ai";
+const MAX_REQUEST_BYTES = 256_000;
 const MAX_RESPONSE_BYTES = 1_000_000;
 const bearerPattern = /^Bearer ([A-Za-z0-9._~+/=-]{16,512})$/;
 
@@ -43,7 +44,7 @@ export function errorResponse(error: unknown): Response {
     return jsonResponse(
       {
         ok: false,
-        error: { code: "VALIDATION_FAILED", message: "请求参数无效。" },
+        error: { code: "VALIDATION_FAILED", message: t("errors.validationFailed") },
       },
       400,
     );
@@ -52,7 +53,10 @@ export function errorResponse(error: unknown): Response {
   return jsonResponse(
     {
       ok: false,
-      error: { code: "UPSTREAM_UNAVAILABLE", message: "Kie 服务暂时不可用。" },
+      error: {
+        code: "UPSTREAM_UNAVAILABLE",
+        message: t("errors.upstreamUnavailable"),
+      },
     },
     502,
   );
@@ -66,16 +70,48 @@ export function authorizeProxyRequest(request: Request): string {
     throw new ProxyRequestError(
       "CONTENT_TYPE_INVALID",
       415,
-      "请求必须使用 application/json。",
+      t("errors.contentTypeJson"),
     );
   }
 
   const authorization = request.headers.get("authorization") ?? "";
   const match = bearerPattern.exec(authorization);
   if (!match) {
-    throw new ProxyRequestError("KEY_INVALID", 401, "Kie API Key 无效或缺失。");
+    throw new ProxyRequestError(
+      "KEY_INVALID",
+      401,
+      t("errors.keyInvalidOrMissing"),
+    );
   }
-  return match[1];
+  return match[1]!;
+}
+
+export async function readJsonBody(request: Request): Promise<unknown> {
+  const declaredLength = request.headers.get("content-length");
+  if (declaredLength !== null) {
+    const parsedLength = Number(declaredLength);
+    if (!Number.isSafeInteger(parsedLength) || parsedLength < 0) {
+      throw new ProxyRequestError(
+        "CONTENT_LENGTH_INVALID",
+        400,
+        t("errors.contentLengthInvalid"),
+      );
+    }
+    if (parsedLength > MAX_REQUEST_BYTES) throw requestTooLargeError();
+  }
+
+  if (!request.body) {
+    throw new ProxyRequestError("JSON_INVALID", 400, t("errors.jsonInvalid"));
+  }
+
+  const bytes = await readLimitedBody(request.body, MAX_REQUEST_BYTES, () =>
+    requestTooLargeError(),
+  );
+  try {
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  } catch {
+    throw new ProxyRequestError("JSON_INVALID", 400, t("errors.jsonInvalid"));
+  }
 }
 
 export async function fetchKieJson(
@@ -84,7 +120,11 @@ export async function fetchKieJson(
   init?: { method?: "GET" | "POST"; body?: unknown; timeoutMs?: number },
 ): Promise<unknown> {
   if (!path.startsWith("/api/")) {
-    throw new ProxyRequestError("ENDPOINT_BLOCKED", 400, "上游端点无效。");
+    throw new ProxyRequestError(
+      "ENDPOINT_BLOCKED",
+      400,
+      t("errors.endpointBlocked"),
+    );
   }
 
   const response = await fetch(`${KIE_API_BASE_URL}${path}`, {
@@ -99,29 +139,36 @@ export async function fetchKieJson(
     signal: AbortSignal.timeout(init?.timeoutMs ?? 20_000),
   });
 
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  if (bytes.byteLength > MAX_RESPONSE_BYTES) {
-    throw new ProxyRequestError(
-      "UPSTREAM_RESPONSE_TOO_LARGE",
-      502,
-      "Kie 返回的数据超过安全限制。",
-    );
-  }
+  const bytes = response.body
+    ? await readLimitedBody(response.body, MAX_RESPONSE_BYTES, () =>
+        new ProxyRequestError(
+          "UPSTREAM_RESPONSE_TOO_LARGE",
+          502,
+          t("errors.responseTooLarge"),
+        ),
+      )
+    : new Uint8Array();
 
   let payload: unknown;
   try {
-    payload = JSON.parse(new TextDecoder().decode(bytes));
+    payload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
   } catch {
     throw new ProxyRequestError(
       "UPSTREAM_RESPONSE_INVALID",
       502,
-      "Kie 返回了无法识别的数据。",
+      t("errors.responseUnrecognized"),
     );
   }
 
   if (!response.ok) {
-    const status = response.status === 401 ? 401 : response.status === 429 ? 429 : 502;
-    const code = response.status === 401 ? "KEY_INVALID" : response.status === 429 ? "UPSTREAM_RATE_LIMITED" : "UPSTREAM_FAILED";
+    const status =
+      response.status === 401 ? 401 : response.status === 429 ? 429 : 502;
+    const code =
+      response.status === 401
+        ? "KEY_INVALID"
+        : response.status === 429
+          ? "UPSTREAM_RATE_LIMITED"
+          : "UPSTREAM_FAILED";
     throw new ProxyRequestError(code, status, safeUpstreamMessage(status));
   }
 
@@ -129,6 +176,15 @@ export async function fetchKieJson(
 }
 
 function validateOrigin(request: Request): void {
+  const fetchSite = request.headers.get("sec-fetch-site");
+  if (fetchSite && fetchSite !== "same-origin") {
+    throw new ProxyRequestError(
+      "ORIGIN_REJECTED",
+      403,
+      t("errors.originRejected"),
+    );
+  }
+
   const origin = request.headers.get("origin");
   const configuredOrigin = process.env.APP_ORIGIN?.trim();
   const vercelOrigin = process.env.VERCEL_PROJECT_PRODUCTION_URL
@@ -136,18 +192,69 @@ function validateOrigin(request: Request): void {
     : undefined;
   const allowedOrigins = new Set(
     process.env.NODE_ENV === "development"
-      ? ["http://localhost:3000", "http://127.0.0.1:3000", configuredOrigin]
+      ? [
+          "http://localhost:3000",
+          "http://127.0.0.1:3000",
+          "http://localhost:3100",
+          "http://127.0.0.1:3100",
+          configuredOrigin,
+        ]
       : [configuredOrigin, vercelOrigin],
   );
   allowedOrigins.delete(undefined);
 
   if (!origin || origin === "null" || !allowedOrigins.has(origin)) {
-    throw new ProxyRequestError("ORIGIN_REJECTED", 403, "请求来源不受信任。");
+    throw new ProxyRequestError(
+      "ORIGIN_REJECTED",
+      403,
+      t("errors.originRejected"),
+    );
   }
 }
 
+async function readLimitedBody(
+  stream: ReadableStream<Uint8Array>,
+  maxBytes: number,
+  createError: () => ProxyRequestError,
+): Promise<Uint8Array> {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalBytes += value.byteLength;
+      if (totalBytes > maxBytes) {
+        await reader.cancel().catch(() => undefined);
+        throw createError();
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const result = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return result;
+}
+
+function requestTooLargeError(): ProxyRequestError {
+  return new ProxyRequestError(
+    "REQUEST_TOO_LARGE",
+    413,
+    t("errors.requestTooLarge"),
+  );
+}
+
 function safeUpstreamMessage(status: number): string {
-  if (status === 401) return "Kie API Key 无效。";
-  if (status === 429) return "Kie 请求过于频繁，请稍后重试。";
-  return "Kie 请求失败。";
+  if (status === 401) return t("errors.keyInvalid");
+  if (status === 429) return t("errors.rateLimited");
+  return t("errors.kieRequestFailed");
 }

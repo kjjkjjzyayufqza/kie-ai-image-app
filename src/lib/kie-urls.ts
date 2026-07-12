@@ -8,9 +8,23 @@ const DEFAULT_KIE_ASSET_HOSTS = [
 export function getAllowedKieAssetHosts(): Set<string> {
   const configuredHosts =
     process.env.NEXT_PUBLIC_KIE_ASSET_HOSTS?.split(",")
-      .map((host) => host.trim().toLowerCase())
-      .filter(Boolean) ?? [];
+      .map(normalizeKieAssetHost)
+      .filter((host): host is string => Boolean(host)) ?? [];
   return new Set([...DEFAULT_KIE_ASSET_HOSTS, ...configuredHosts]);
+}
+
+export function normalizeKieAssetHost(value: string): string | undefined {
+  const hostname = value.trim().toLowerCase();
+  if (
+    hostname.length > 253 ||
+    !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(
+      hostname,
+    ) ||
+    isIpAddress(hostname)
+  ) {
+    return undefined;
+  }
+  return hostname;
 }
 
 export function isSafeHttpsUrl(value: string): boolean {

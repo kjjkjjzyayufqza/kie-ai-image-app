@@ -1,8 +1,13 @@
+import { isSafeHttpsUrl } from "@/lib/kie-urls";
+
 export async function copyText(value: string): Promise<void> {
   await navigator.clipboard.writeText(value);
 }
 
 export function openExternalUrl(url: string): void {
+  if (!isSafeHttpsUrl(url)) {
+    throw new Error("Blocked an unsafe external URL.");
+  }
   const anchor = document.createElement("a");
   anchor.href = url;
   anchor.target = "_blank";

@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import type { GenerationRequest } from "@/lib/domain";
+import type { GenerationRequest, ImageResolution } from "@/lib/domain";
 
 export const aspectRatios = [
   "auto",
@@ -22,6 +22,22 @@ export const aspectRatios = [
 ] as const;
 
 export const resolutions = ["1K", "2K", "4K"] as const;
+
+// Kie has no public pricing API. These values mirror its published GPT Image 2
+// pricing checked on 2026-07-11 (1 USD = 200 credits); task records remain
+// the source of truth.
+export const gptImage2CreditsPerImage: Record<ImageResolution, number> = {
+  "1K": 6,
+  "2K": 10,
+  "4K": 16,
+};
+
+export function estimateGptImage2Credits(
+  resolution: ImageResolution,
+  count = 1,
+): number {
+  return gptImage2CreditsPerImage[resolution] * count;
+}
 
 const unsupportedHighResolutionRatios = new Set([
   "5:4",

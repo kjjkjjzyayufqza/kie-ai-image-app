@@ -12,6 +12,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
+import { useI18n } from "@/i18n/i18n-provider";
 import type { GenerationTask } from "@/lib/domain";
 import { cancelQueuedTask } from "@/lib/workspace-service";
 
@@ -21,26 +22,27 @@ interface TaskQueueSheetProps {
   onOpenChange: (open: boolean) => void;
 }
 
-const stateLabels: Record<GenerationTask["status"], string> = {
-  queued: "等待提交",
-  submitting: "正在提交",
-  waiting: "等待处理",
-  queuing: "Kie 队列中",
-  generating: "生成中",
-  success: "已完成",
-  fail: "失败",
-  stale: "暂停轮询",
-  unknown: "提交结果未知",
-  "canceled-local": "已取消",
-};
-
 export function TaskQueueSheet({ open, tasks, onOpenChange }: TaskQueueSheetProps) {
+  const { t } = useI18n();
+  const stateLabels: Record<GenerationTask["status"], string> = {
+    queued: t("queue.status.queued"),
+    submitting: t("queue.status.submitting"),
+    waiting: t("queue.status.waiting"),
+    queuing: t("queue.status.queuing"),
+    generating: t("queue.status.generating"),
+    success: t("queue.status.success"),
+    fail: t("queue.status.fail"),
+    stale: t("queue.status.stale"),
+    unknown: t("queue.status.unknown"),
+    "canceled-local": t("queue.status.canceled-local"),
+  };
+
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent side="right" className="w-full p-0 sm:max-w-md">
         <SheetHeader className="border-b p-4">
-          <SheetTitle>任务队列</SheetTitle>
-          <SheetDescription>每张图片对应一个独立 Kie 任务。</SheetDescription>
+          <SheetTitle>{t("queue.title")}</SheetTitle>
+          <SheetDescription>{t("queue.description")}</SheetDescription>
         </SheetHeader>
         <ScrollArea className="h-[calc(100dvh-89px)]">
           <div className="divide-y">
@@ -68,14 +70,14 @@ export function TaskQueueSheet({ open, tasks, onOpenChange }: TaskQueueSheetProp
                     onClick={() => void cancelQueuedTask(task.localTaskId)}
                   >
                     <Ban />
-                    <span className="sr-only">取消本地任务</span>
+                    <span className="sr-only">{t("queue.cancelLocal")}</span>
                   </Button>
                 ) : null}
               </div>
             ))}
             {tasks.length === 0 ? (
               <p className="p-10 text-center text-sm text-muted-foreground">
-                还没有任务
+                {t("queue.empty")}
               </p>
             ) : null}
           </div>
@@ -93,7 +95,9 @@ function TaskStateIcon({ status }: { status: GenerationTask["status"] }) {
     return <CircleAlert className="mt-0.5 size-4 shrink-0 text-red-600" />;
   }
   if (["submitting", "waiting", "queuing", "generating"].includes(status)) {
-    return <LoaderCircle className="mt-0.5 size-4 shrink-0 animate-spin text-blue-600" />;
+    return (
+      <LoaderCircle className="mt-0.5 size-4 shrink-0 animate-spin text-blue-600" />
+    );
   }
   return <Clock3 className="mt-0.5 size-4 shrink-0 text-muted-foreground" />;
 }

@@ -10,6 +10,7 @@ import type {
   Room,
   Turn,
 } from "@/lib/domain";
+import { t } from "@/i18n/runtime";
 
 class KieWorkspaceDatabase extends Dexie {
   rooms!: EntityTable<Room, "id">;
@@ -60,7 +61,7 @@ export async function createInitialRoom(): Promise<Room> {
   const now = Date.now();
   const room: Room = {
     id: crypto.randomUUID(),
-    title: "新对话",
+    title: t("rooms.defaultTitle"),
     createdAt: now,
     updatedAt: now,
   };
