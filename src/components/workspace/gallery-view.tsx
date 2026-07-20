@@ -53,8 +53,8 @@ import type {
   GenerationTask,
   Turn,
 } from "@/lib/domain";
-import { copyText, openExternalUrl } from "@/lib/browser-actions";
-import { fetchKieDownloadUrl } from "@/lib/kie-client";
+import { copyText } from "@/lib/browser-actions";
+import { downloadKieAsset } from "@/lib/kie-client";
 import {
   markAssetAvailable,
   markAssetLoadError,
@@ -142,7 +142,11 @@ export function GalleryView({
     }
     setDownloadingId(asset.id);
     try {
-      openExternalUrl(await fetchKieDownloadUrl(apiKey, asset.url));
+      await downloadKieAsset(
+        apiKey,
+        asset.url,
+        `kie-gallery-${asset.outputOrdinal + 1}.png`,
+      );
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t("gallery.downloadFailed"));
     } finally {

@@ -292,6 +292,9 @@ export const zh = {
     resultUrlUnrecognized: "Kie 返回的结果 URL 无法识别。",
     downloadUrlNotAllowed: "该图片 URL 不在已验证的 Kie 域名中。",
     downloadUrlInvalid: "Kie 未返回有效下载链接。",
+    downloadFetchFailed: "从 Kie 下载图片文件失败。",
+    downloadTooLarge: "图片过大，无法安全下载。",
+    downloadFailed: "图片下载失败。",
     creditsFailed: "无法读取 Kie credits。",
   },
 } satisfies Dictionary;

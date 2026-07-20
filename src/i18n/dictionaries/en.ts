@@ -297,6 +297,9 @@ export const en = {
     resultUrlUnrecognized: "Kie returned an unrecognized result URL.",
     downloadUrlNotAllowed: "This image URL is not on a verified Kie domain.",
     downloadUrlInvalid: "Kie did not return a valid download link.",
+    downloadFetchFailed: "Failed to download the image file from Kie.",
+    downloadTooLarge: "The image is too large to download safely.",
+    downloadFailed: "Image download failed.",
     creditsFailed: "Unable to read Kie credits.",
   },
 };

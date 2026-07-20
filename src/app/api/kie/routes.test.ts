@@ -173,11 +173,11 @@ describe("Kie proxy routes", () => {
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 
-  it("rejects a download URL returned on an unapproved host", async () => {
+  it("rejects a download URL that is not safe HTTPS", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       Response.json({
         code: 200,
-        data: "https://phishing.example/download.png",
+        data: "http://phishing.example/download.png",
       }),
     );
     vi.stubGlobal("fetch", fetchMock);
@@ -191,5 +191,49 @@ describe("Kie proxy routes", () => {
 
     expect(response.status).toBe(502);
     expect(payload.error.code).toBe("DOWNLOAD_URL_INVALID");
+  });
+
+  it("accepts signed temporary download hosts outside the render allowlist", async () => {
+    const signedUrl =
+      "https://cdn.example.r2.cloudflarestorage.com/v/image.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Signature=abc";
+    const fetchMock = vi.fn().mockResolvedValue(
+      Response.json({
+        code: 200,
+        data: signedUrl,
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await getDownloadUrl(
+      makeRequest("/api/kie/download-url", {
+        url: "https://tempfile.redpandaai.co/generated.png",
+      }),
+    );
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.data.url).toBe(signedUrl);
+  });
+
+  it("accepts object-shaped download-url responses", async () => {
+    const signedUrl =
+      "https://assets.example.com/download/image.png?token=abc";
+    const fetchMock = vi.fn().mockResolvedValue(
+      Response.json({
+        code: 200,
+        data: { url: signedUrl },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await getDownloadUrl(
+      makeRequest("/api/kie/download-url", {
+        url: "https://tempfile.aiquickdraw.com/generated.png",
+      }),
+    );
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.data.url).toBe(signedUrl);
   });
 });

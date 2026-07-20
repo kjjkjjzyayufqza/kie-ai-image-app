@@ -35,8 +35,8 @@ import {
 import { ImagePreviewDialog } from "@/components/workspace/image-preview-dialog";
 import { ImageLoadFrame } from "@/components/workspace/ui-states";
 import type { Asset, GenerationTask } from "@/lib/domain";
-import { copyText, openExternalUrl } from "@/lib/browser-actions";
-import { fetchKieDownloadUrl } from "@/lib/kie-client";
+import { copyText } from "@/lib/browser-actions";
+import { downloadKieAsset } from "@/lib/kie-client";
 import { estimateGptImage2Credits } from "@/lib/model-registry";
 import {
   markAssetAvailable,
@@ -74,8 +74,11 @@ export function TaskCard({ task, asset, apiKey, keyFingerprint }: TaskCardProps)
     if (!asset || !apiKey) return;
     setDownloading(true);
     try {
-      const url = await fetchKieDownloadUrl(apiKey, asset.url);
-      openExternalUrl(url);
+      await downloadKieAsset(
+        apiKey,
+        asset.url,
+        `kie-${task.batchIndex + 1}-${asset.outputOrdinal + 1}.png`,
+      );
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t("task.downloadLinkFailed"));
     } finally {

@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { downloadBlob, openExternalUrl } from "@/lib/browser-actions";
 import type { GenerationRequest, KieTaskResult, ReferenceUpload } from "@/lib/domain";
 import { t } from "@/i18n/runtime";
 import { isRenderableKieUrl } from "@/lib/kie-urls";
@@ -55,6 +56,18 @@ export class KieClientError extends Error {
   }
 }
 
+function filenameFromAssetUrl(url: string): string {
+  try {
+    const base = new URL(url).pathname.split("/").pop();
+    if (base && /\.(png|jpe?g|webp|gif)$/i.test(base)) {
+      return base.slice(0, 120);
+    }
+  } catch {
+    // ignore parse failures
+  }
+  return `kie-image-${Date.now()}.png`;
+}
+
 export async function createKieTask(
   apiKey: string,
   input: GenerationRequest,
@@ -92,6 +105,56 @@ export async function fetchKieDownloadUrl(
     25_000,
   );
   return downloadSchema.parse(response).data.url;
+}
+
+/**
+ * Streams the image through the same-origin proxy so the browser can save it
+ * with Content-Disposition. Falls back to a temporary Kie download URL when
+ * the streaming endpoint fails.
+ */
+export async function downloadKieAsset(
+  apiKey: string,
+  url: string,
+  filename?: string,
+): Promise<void> {
+  const resolvedName = filename ?? filenameFromAssetUrl(url);
+  let response: Response;
+  try {
+    response = await fetch("/api/kie/download-file", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ url, filename: resolvedName }),
+      cache: "no-store",
+      credentials: "same-origin",
+      redirect: "error",
+      signal: AbortSignal.timeout(120_000),
+    });
+  } catch {
+    throw new KieClientError("NETWORK_ERROR", t("errors.networkUnknown"));
+  }
+
+  if (response.ok) {
+    downloadBlob(await response.blob(), resolvedName);
+    return;
+  }
+
+  const payload = (await response.json().catch(() => null)) as {
+    error?: { code?: string; message?: string };
+  } | null;
+
+  // Fallback: resolve a temporary link and open it when streaming fails.
+  try {
+    openExternalUrl(await fetchKieDownloadUrl(apiKey, url));
+    return;
+  } catch {
+    throw new KieClientError(
+      payload?.error?.code ?? "DOWNLOAD_FAILED",
+      payload?.error?.message ?? t("errors.downloadFailed"),
+    );
+  }
 }
 
 export async function uploadReferenceImage(

@@ -1,11 +1,11 @@
-import { isSafeHttpsUrl } from "@/lib/kie-urls";
+import { isDownloadableHttpsUrl, isSafeHttpsUrl } from "@/lib/kie-urls";
 
 export async function copyText(value: string): Promise<void> {
   await navigator.clipboard.writeText(value);
 }
 
 export function openExternalUrl(url: string): void {
-  if (!isSafeHttpsUrl(url)) {
+  if (!isSafeHttpsUrl(url) && !isDownloadableHttpsUrl(url)) {
     throw new Error("Blocked an unsafe external URL.");
   }
   const anchor = document.createElement("a");
@@ -23,7 +23,11 @@ export function downloadTextFile(
   contents: string,
   mimeType = "application/json",
 ): void {
-  const objectUrl = URL.createObjectURL(new Blob([contents], { type: mimeType }));
+  downloadBlob(new Blob([contents], { type: mimeType }), filename);
+}
+
+export function downloadBlob(blob: Blob, filename: string): void {
+  const objectUrl = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = objectUrl;
   anchor.download = filename;

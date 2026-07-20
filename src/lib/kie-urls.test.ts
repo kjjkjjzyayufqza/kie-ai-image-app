@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   getAllowedKieAssetHosts,
+  isDownloadableHttpsUrl,
   isRenderableKieUrl,
   isSafeHttpsUrl,
   normalizeKieAssetHost,
@@ -41,5 +42,13 @@ describe("Kie URL policy", () => {
     expect(
       isRenderableKieUrl("https://tempfile.redpandaai.co.attacker.example/image.png"),
     ).toBe(false);
+  });
+
+  it("allows signed temporary download hosts that are not renderable", () => {
+    const signed =
+      "https://cdn.example.r2.cloudflarestorage.com/v/image.png?X-Amz-Signature=abc";
+    expect(isRenderableKieUrl(signed)).toBe(false);
+    expect(isDownloadableHttpsUrl(signed)).toBe(true);
+    expect(isDownloadableHttpsUrl("http://cdn.example.com/file.png")).toBe(false);
   });
 });

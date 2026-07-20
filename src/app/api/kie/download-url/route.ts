@@ -1,6 +1,9 @@
 import { z } from "zod";
 
-import { isRenderableKieUrl } from "@/lib/kie-urls";
+import {
+  isDownloadableHttpsUrl,
+  isRenderableKieUrl,
+} from "@/lib/kie-urls";
 import {
   authorizeProxyRequest,
   errorResponse,
@@ -15,7 +18,15 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 const requestSchema = z.object({ url: z.string().max(2_048) }).strict();
-const responseSchema = z.object({ code: z.number(), data: z.string() });
+const responseSchema = z.object({
+  code: z.number(),
+  data: z.union([z.string(), z.object({ url: z.string() }).passthrough()]),
+});
+
+function extractDownloadUrl(data: z.infer<typeof responseSchema>["data"]): string {
+  if (typeof data === "string") return data;
+  return data.url;
+}
 
 export async function POST(request: Request) {
   return runWithRequestMessages(request, async () => {
@@ -36,14 +47,16 @@ export async function POST(request: Request) {
           body: { url },
         }),
       );
-      if (upstream.code !== 200 || !isRenderableKieUrl(upstream.data)) {
+      const downloadUrl = extractDownloadUrl(upstream.data);
+      // Signed temp links live on R2/S3 hosts outside the render allowlist.
+      if (upstream.code !== 200 || !isDownloadableHttpsUrl(downloadUrl)) {
         throw new ProxyRequestError(
           "DOWNLOAD_URL_INVALID",
           502,
           t("errors.downloadUrlInvalid"),
         );
       }
-      return jsonResponse({ ok: true, data: { url: upstream.data } });
+      return jsonResponse({ ok: true, data: { url: downloadUrl } });
     } catch (error) {
       return errorResponse(error);
     }
