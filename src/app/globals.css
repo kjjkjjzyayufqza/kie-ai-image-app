@@ -48,6 +48,10 @@
   --radius-4xl: var(--radius);
 }
 
+.canvas-grid {
+  background-image: radial-gradient(circle, #d4d4d4 1.1px, transparent 1.2px);
+}
+
 :root {
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);

@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useLiveQuery } from "dexie-react-hooks";
 
+import { CanvasView } from "@/components/workspace/canvas-view";
 import { ChatView } from "@/components/workspace/chat-view";
 import { Composer } from "@/components/workspace/composer";
 import { GalleryView } from "@/components/workspace/gallery-view";
@@ -10,7 +11,7 @@ import { ResizableSidebar } from "@/components/workspace/resizable-sidebar";
 import { RoomSidebar } from "@/components/workspace/room-sidebar";
 import { SettingsDialog } from "@/components/workspace/settings-dialog";
 import { TaskQueueSheet } from "@/components/workspace/task-queue-sheet";
-import { Topbar } from "@/components/workspace/topbar";
+import { Topbar, type WorkspaceView } from "@/components/workspace/topbar";
 import { WorkspaceHydrationShell } from "@/components/workspace/ui-states";
 import {
   Sheet,
@@ -23,11 +24,18 @@ import { useKieKey } from "@/hooks/use-kie-key";
 import { useTaskCoordinator } from "@/hooks/use-task-coordinator";
 import { useI18n } from "@/i18n/i18n-provider";
 import { createInitialRoom, db } from "@/lib/db";
-import type { ImageResolution } from "@/lib/domain";
+import { createEmptyCanvasGraph } from "@/lib/canvas-graph";
+import {
+  canvasNodeIdForReference,
+  referenceFromCanvasNode,
+} from "@/lib/canvas-references";
+import type { ImageResolution, ReferenceUpload } from "@/lib/domain";
 import {
   createRoom,
   deleteRoom,
+  ensureCanvasGraph,
   renameRoom,
+  selectCanvasGraphNode,
 } from "@/lib/workspace-service";
 
 const ACTIVE_ROOM_STORAGE_KEY = "kie-ai-workspace.active-room.v1";
@@ -45,12 +53,18 @@ export function WorkspaceApp() {
   const { apiKey, fingerprint } = useKieKey();
   const { isLeader } = useTaskCoordinator(apiKey, fingerprint);
   const [currentRoomId, setCurrentRoomId] = useState<string>();
-  const [view, setView] = useState<"chat" | "gallery">("chat");
+  const [view, setView] = useState<WorkspaceView>("chat");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [queueOpen, setQueueOpen] = useState(false);
   const [mobileRoomsOpen, setMobileRoomsOpen] = useState(false);
   const [chatScrollRequest, setChatScrollRequest] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
+  const [pickedReference, setPickedReference] = useState<ReferenceUpload>();
+  const [canvasDrop, setCanvasDrop] = useState<{
+    files: File[];
+    origin: { x: number; y: number };
+  } | null>(null);
+  const consumeCanvasDrop = useCallback(() => setCanvasDrop(null), []);
 
   const queriedRooms = useLiveQuery(
     () => db.rooms.orderBy("updatedAt").reverse().toArray(),
@@ -96,6 +110,12 @@ export function WorkspaceApp() {
   const allTurns = useLiveQuery(() => db.turns.toArray(), []) ?? [];
   const collections =
     useLiveQuery(() => db.collections.orderBy("createdAt").toArray(), []) ?? [];
+  const canvasGraph = useLiveQuery(
+    () => (currentRoomId ? db.canvasGraphs.get(currentRoomId) : undefined),
+    [currentRoomId],
+  );
+  const referenceUploads =
+    useLiveQuery(() => db.referenceUploads.toArray(), []) ?? [];
   const snapshot = useLiveQuery(async () => {
     if (!fingerprint) return undefined;
     return db.accountSnapshots.where("keyFingerprint").equals(fingerprint).last();
@@ -171,6 +191,12 @@ export function WorkspaceApp() {
     }
   }, [currentRoomId]);
 
+  useEffect(() => {
+    if (view === "canvas" && currentRoomId) {
+      void ensureCanvasGraph(currentRoomId);
+    }
+  }, [view, currentRoomId]);
+
   const selectRoom = (roomId: string) => {
     setCurrentRoomId(roomId);
     setView("chat");
@@ -238,6 +264,60 @@ export function WorkspaceApp() {
               collections={collections}
               apiKey={apiKey}
             />
+          ) : view === "canvas" ? (
+            <>
+              <CanvasView
+                key={currentRoomId}
+                graph={
+                  canvasGraph ??
+                  createEmptyCanvasGraph(currentRoomId ?? "pending")
+                }
+                assets={roomAssets}
+                tasks={roomTasks}
+                onNodeSelected={(node) => {
+                  const picked = referenceFromCanvasNode(
+                    node,
+                    roomAssets,
+                    referenceUploads,
+                  );
+                  if (picked) setPickedReference(picked);
+                }}
+                onFilesDropped={(files, origin) =>
+                  setCanvasDrop({ files, origin })
+                }
+              />
+              {currentRoomId ? (
+                <Composer
+                  key={`${currentRoomId}:canvas`}
+                  roomId={currentRoomId}
+                  apiKey={apiKey}
+                  keyFingerprint={fingerprint}
+                  availableCredits={snapshot?.credits}
+                  observedCreditPrices={observedCreditPrices}
+                  creditsStale={
+                    !snapshot ||
+                    currentTime === 0 ||
+                    currentTime - snapshot.checkedAt > 60_000
+                  }
+                  layout="canvas"
+                  canvasParentNodeId={canvasGraph?.selectedNodeId}
+                  canvasPickedReference={pickedReference}
+                  canvasDrop={canvasDrop}
+                  onCanvasDropConsumed={consumeCanvasDrop}
+                  onReferenceFocus={(uploadId) =>
+                    void selectCanvasGraphNode(
+                      currentRoomId,
+                      canvasNodeIdForReference(
+                        uploadId,
+                        canvasGraph?.nodes ?? [],
+                      ),
+                    )
+                  }
+                  onOpenSettings={() => setSettingsOpen(true)}
+                  onSubmitted={() => undefined}
+                />
+              ) : null}
+            </>
           ) : (
             <>
               <ChatView

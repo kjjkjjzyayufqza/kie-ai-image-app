@@ -30,8 +30,9 @@ export const en = {
   },
   topbar: {
     openRooms: "Open room list",
-    subtitle: "GPT Image 2 · Local browser",
+    subtitle: "Kie image models · Local browser",
     chat: "Chat",
+    canvas: "Canvas",
     gallery: "Gallery",
     configureKey: "Configure Key",
     keyShort: "Key",
@@ -111,8 +112,12 @@ export const en = {
     observedEstimate:
       "Estimate uses the latest observed {resolution} charge for this key.",
     defaultEstimate:
-      "Without history for this resolution, pricing uses Kie rates: 1K 6 · 2K 10 · 4K 16 credits/image.",
+      "Estimate uses the selected model's published or fallback credit list. Actual billing follows Kie task records.",
     actualBilling: "Actual billing follows Kie task records.",
+    modelAria: "Image model",
+    modelFallback: "Using built-in model list",
+    modelLive: "Model list from Kie",
+    persistFailed: "Local image save failed",
     aspectRatioAria: "Aspect ratio",
     resolutionAria: "Resolution",
     countAria: "Generation count",
@@ -141,7 +146,9 @@ export const en = {
     emptyTitle: "Gallery is empty",
     noMatchesTitle: "No matching images",
     emptyDescription:
-      "Successful generations appear here. URLs stay only in this browser.",
+      "Successful generations appear here. Images are stored locally in this browser.",
+    persistPending: "Saving locally…",
+    persistFailed: "Local copy missing. The original URL may have expired.",
     noMatchesDescription: "Try adjusting search, favorites, or status filters.",
     noVisibleDescription: "There are no images to show.",
     generatedAlt: "Kie generated image",
@@ -163,6 +170,18 @@ export const en = {
     noCollections: "No collections yet",
     favorite: "Favorite",
     unfavorite: "Unfavorite",
+  },
+  canvas: {
+    emptyTitle: "Infinite canvas",
+    emptyDescription:
+      "Drop or select reference images, then generate. Images live on this board as objects you can pan, zoom, and iterate from.",
+    zoomIn: "Zoom in",
+    zoomOut: "Zoom out",
+    resetView: "Reset view",
+    generating: "Generating",
+    imageAlt: "Canvas image",
+    dropToAdd: "Drop images onto the canvas",
+    referenceBadge: "Ref",
   },
   queue: {
     title: "Task queue",
@@ -301,6 +320,8 @@ export const en = {
     downloadTooLarge: "The image is too large to download safely.",
     downloadFailed: "Image download failed.",
     creditsFailed: "Unable to read Kie credits.",
+    persistFailed: "Could not store the image locally. The remote URL may expire.",
+    unknownModel: "Unknown or unsupported image model.",
   },
 };
 

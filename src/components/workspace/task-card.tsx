@@ -33,14 +33,14 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { ImagePreviewDialog } from "@/components/workspace/image-preview-dialog";
-import { ImageLoadFrame } from "@/components/workspace/ui-states";
+import { StoredImage } from "@/components/workspace/stored-image";
+import { useAssetObjectUrl } from "@/hooks/use-asset-object-url";
 import type { Asset, GenerationTask } from "@/lib/domain";
 import { copyText } from "@/lib/browser-actions";
-import { downloadKieAsset } from "@/lib/kie-client";
+import { downloadKieAsset, downloadStoredAsset } from "@/lib/kie-client";
 import { estimateGptImage2Credits } from "@/lib/model-registry";
 import {
   markAssetAvailable,
-  markAssetLoadError,
   requestTaskRefresh,
   retryGenerationTask,
 } from "@/lib/workspace-service";
@@ -56,6 +56,7 @@ interface TaskCardProps {
 
 export function TaskCard({ task, asset, apiKey, keyFingerprint }: TaskCardProps) {
   const { t } = useI18n();
+  const preview = useAssetObjectUrl(asset);
   const activeLabels: Partial<Record<GenerationTask["status"], string>> = {
     queued: t("queue.status.queued"),
     submitting: t("queue.status.submitting"),
@@ -67,18 +68,18 @@ export function TaskCard({ task, asset, apiKey, keyFingerprint }: TaskCardProps)
   const [previewOpen, setPreviewOpen] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [retryConfirmOpen, setRetryConfirmOpen] = useState(false);
-  const [imageLoaded, setImageLoaded] = useState(false);
+
   const isActive = Boolean(activeLabels[task.status]);
 
   const download = async () => {
     if (!asset || !apiKey) return;
     setDownloading(true);
     try {
-      await downloadKieAsset(
-        apiKey,
-        asset.url,
-        `kie-${task.batchIndex + 1}-${asset.outputOrdinal + 1}.png`,
-      );
+      const filename = `kie-${task.batchIndex + 1}-${asset.outputOrdinal + 1}.png`;
+      const stored = await downloadStoredAsset(asset.id, filename);
+      if (!stored) {
+        await downloadKieAsset(apiKey, asset.url, filename);
+      }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t("task.downloadLinkFailed"));
     } finally {
@@ -104,7 +105,6 @@ export function TaskCard({ task, asset, apiKey, keyFingerprint }: TaskCardProps)
                   variant="outline"
                   className="active:scale-[0.98]"
                   onClick={() => {
-                    setImageLoaded(false);
                     void requestTaskRefresh(task.localTaskId);
                   }}
                 >
@@ -114,30 +114,13 @@ export function TaskCard({ task, asset, apiKey, keyFingerprint }: TaskCardProps)
               }
             />
           ) : (
-            <ImageLoadFrame loaded={imageLoaded || asset.availability === "available"}>
-              {/* Kie result URLs are rendered directly and never pass through Next Image. */}
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={asset.url}
-                alt={t("task.resultAlt", { index: task.batchIndex + 1 })}
-                loading="lazy"
-                referrerPolicy="no-referrer"
-                className={cn(
-                  "size-full object-cover transition-opacity duration-300",
-                  imageLoaded || asset.availability === "available"
-                    ? "opacity-100"
-                    : "opacity-0",
-                )}
-                onLoad={() => {
-                  setImageLoaded(true);
-                  void markAssetAvailable(asset.id);
-                }}
-                onError={() => {
-                  setImageLoaded(false);
-                  void markAssetLoadError(asset.id);
-                }}
-              />
-            </ImageLoadFrame>
+            <StoredImage
+              asset={asset}
+              alt={t("task.resultAlt", { index: task.batchIndex + 1 })}
+              onLoad={() => {
+                void markAssetAvailable(asset.id);
+              }}
+            />
           )
         ) : task.status === "success" && asset && !asset.isRenderable ? (
           <StatePanel
@@ -237,7 +220,7 @@ export function TaskCard({ task, asset, apiKey, keyFingerprint }: TaskCardProps)
         <ImagePreviewDialog
           open={previewOpen}
           onOpenChange={setPreviewOpen}
-          src={asset.url}
+          src={preview.src}
           alt={t("task.resultLargeAlt", { index: task.batchIndex + 1 })}
           title={t("task.resultTitle", { index: task.batchIndex + 1 })}
         />

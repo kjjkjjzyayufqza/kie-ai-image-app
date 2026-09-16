@@ -3,6 +3,7 @@
 import {
   GalleryHorizontalEnd,
   KeyRound,
+  LayoutGrid,
   Menu,
   MessageSquareText,
   Settings,
@@ -21,14 +22,16 @@ import { LocaleSwitcher } from "@/components/workspace/locale-switcher";
 import { useI18n } from "@/i18n/i18n-provider";
 import { cn } from "@/lib/utils";
 
+export type WorkspaceView = "chat" | "gallery" | "canvas";
+
 interface TopbarProps {
-  view: "chat" | "gallery";
+  view: WorkspaceView;
   credits?: number;
   creditsStale: boolean;
   activeTaskCount: number;
   hasApiKey: boolean;
   isLeader: boolean;
-  onViewChange: (view: "chat" | "gallery") => void;
+  onViewChange: (view: WorkspaceView) => void;
   onOpenRooms: () => void;
   onOpenQueue: () => void;
   onOpenSettings: () => void;
@@ -82,6 +85,16 @@ export function Topbar({
         >
           <MessageSquareText />
           <span className="hidden sm:inline">{t("topbar.chat")}</span>
+        </Button>
+        <Button
+          variant={view === "canvas" ? "secondary" : "ghost"}
+          size="sm"
+          className="active:scale-[0.98]"
+          onClick={() => onViewChange("canvas")}
+          aria-label={t("topbar.canvas")}
+        >
+          <LayoutGrid />
+          <span className="hidden sm:inline">{t("topbar.canvas")}</span>
         </Button>
         <Button
           variant={view === "gallery" ? "secondary" : "ghost"}

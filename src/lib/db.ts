@@ -3,7 +3,9 @@ import Dexie, { type EntityTable } from "dexie";
 import type {
   AccountSnapshot,
   Asset,
+  AssetChunkRecord,
   AssetCollection,
+  CanvasGraph,
   CoordinatorLease,
   GenerationTask,
   ReferenceUpload,
@@ -21,6 +23,8 @@ class KieWorkspaceDatabase extends Dexie {
   accountSnapshots!: EntityTable<AccountSnapshot, "id">;
   coordinatorLeases!: EntityTable<CoordinatorLease, "id">;
   collections!: EntityTable<AssetCollection, "id">;
+  assetChunks!: EntityTable<AssetChunkRecord, "id">;
+  canvasGraphs!: EntityTable<CanvasGraph, "roomId">;
 
   constructor() {
     super("kie-ai-image-workspace");
@@ -46,6 +50,11 @@ class KieWorkspaceDatabase extends Dexie {
 
     this.version(3).stores({
       collections: "id, &name, createdAt",
+    });
+
+    this.version(4).stores({
+      assetChunks: "id, assetId, chunkIndex, [assetId+chunkIndex]",
+      canvasGraphs: "roomId, updatedAt",
     });
   }
 }

@@ -3,11 +3,14 @@
 import { useEffect, useRef, useState } from "react";
 
 import { t } from "@/i18n/runtime";
+import { recordSuccessfulTaskAssets } from "@/lib/asset-ingest";
+import { syncCanvasWithAssets } from "@/lib/canvas-graph";
 import { db } from "@/lib/db";
-import type { Asset, GenerationTask } from "@/lib/domain";
+import type { GenerationTask } from "@/lib/domain";
 import {
   createKieTask,
   fetchKieCredits,
+  fetchKieImageBytes,
   KieClientError,
   queryKieTask,
 } from "@/lib/kie-client";
@@ -229,7 +232,7 @@ async function pollNextTask(
 
   try {
     const result = await queryKieTask(apiKey, task.remoteTaskId);
-    await applyTaskResult(task, result);
+    await applyTaskResult(apiKey, task, result);
   } catch (error) {
     const clientError = error instanceof KieClientError ? error : undefined;
     await db.tasks.update(task.localTaskId, {
@@ -242,6 +245,7 @@ async function pollNextTask(
 }
 
 async function applyTaskResult(
+  apiKey: string,
   task: GenerationTask,
   result: Awaited<ReturnType<typeof queryKieTask>>,
 ): Promise<void> {
@@ -249,57 +253,28 @@ async function applyTaskResult(
   const terminal = result.state === "success" || result.state === "fail";
   const pollAfter = terminal ? undefined : now + nextPollDelay(task);
 
-  await db.transaction("rw", db.tasks, db.assets, async () => {
-    await db.tasks.update(task.localTaskId, {
-      status: result.state,
-      failureCode: result.failCode,
-      failureMessage: result.failMessage,
-      creditsConsumed: result.creditsConsumed,
-      pollAfter,
-      completedAt: terminal ? result.completedAt ?? now : undefined,
-      updatedAt: now,
-    });
-
-    if (result.state !== "success") return;
-    const existingAssets = await db.assets
-      .where("localTaskId")
-      .equals(task.localTaskId)
-      .toArray();
-    const existingByOrdinal = new Map(
-      existingAssets.map((asset) => [asset.outputOrdinal, asset]),
-    );
-    if (
-      existingAssets.length > 0 &&
-      existingAssets.length !== result.resultUrls.length
-    ) {
-      await db.tasks.update(task.localTaskId, {
-        failureCode: "RESULT_CONTRACT_CHANGED",
-        failureMessage: t("errors.resultCountChanged"),
-      });
-      return;
-    }
-    const assets: Asset[] = result.resultUrls.map((entry, outputOrdinal) => {
-      const existing = existingByOrdinal.get(outputOrdinal);
-      return {
-        id: `${task.localTaskId}:${outputOrdinal}`,
-        localTaskId: task.localTaskId,
-        roomId: task.roomId,
-        outputOrdinal,
-        url: entry.url,
-        isRenderable: entry.isRenderable,
-        availability:
-          existing?.url === entry.url ? existing.availability : "unchecked",
-        favorite: existing?.favorite ?? false,
-        tags: existing?.tags ?? [],
-        collectionIds: existing?.collectionIds ?? [],
-        width: existing?.width,
-        height: existing?.height,
-        createdAt: existing?.createdAt ?? result.completedAt ?? now,
-        lastCheckedAt: existing?.lastCheckedAt,
-      };
-    });
-    await db.assets.bulkPut(assets);
+  await db.tasks.update(task.localTaskId, {
+    status: result.state,
+    failureCode: result.failCode,
+    failureMessage: result.failMessage,
+    creditsConsumed: result.creditsConsumed,
+    pollAfter,
+    completedAt: terminal ? result.completedAt ?? now : undefined,
+    updatedAt: now,
   });
+
+  if (result.state !== "success") return;
+
+  const assets = await recordSuccessfulTaskAssets({
+    task,
+    result,
+    fetchBytes: (url) => fetchKieImageBytes(apiKey, url),
+  });
+
+  const graph = await db.canvasGraphs.get(task.roomId);
+  if (graph) {
+    await db.canvasGraphs.put(syncCanvasWithAssets(graph, assets, now));
+  }
 }
 
 async function refreshCredits(

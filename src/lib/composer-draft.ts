@@ -28,6 +28,7 @@ const referenceUploadSchema = z
 const composerDraftSchema = z
   .object({
     mode: z.enum(["text-to-image", "image-to-image"]),
+    model: z.string().max(128).optional(),
     prompt: z.string().max(20_000),
     aspectRatio: z.enum(aspectRatios),
     resolution: z.enum(resolutions),
@@ -38,6 +39,7 @@ const composerDraftSchema = z
 
 export interface ComposerDraft {
   mode: GenerationMode;
+  model?: string;
   prompt: string;
   aspectRatio: AspectRatio;
   resolution: ImageResolution;

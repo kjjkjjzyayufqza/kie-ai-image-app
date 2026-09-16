@@ -1,5 +1,12 @@
+import {
+  attachTaskNodes,
+  createEmptyCanvasGraph,
+  placeReferenceNodes,
+  selectCanvasNode,
+} from "@/lib/canvas-graph";
 import { db } from "@/lib/db";
 import type {
+  CanvasGraph,
   GenerationRequest,
   GenerationTask,
   ReferenceUpload,
@@ -51,14 +58,25 @@ export async function deleteRoom(roomId: string): Promise<void> {
 
   await db.transaction(
     "rw",
-    db.rooms,
-    db.turns,
-    db.tasks,
-    db.assets,
+    [
+      db.rooms,
+      db.turns,
+      db.tasks,
+      db.assets,
+      db.assetChunks,
+      db.canvasGraphs,
+    ],
     async () => {
+      const assets = await db.assets.where("roomId").equals(roomId).toArray();
+      await Promise.all(
+        assets.map((asset) =>
+          db.assetChunks.where("assetId").equals(asset.id).delete(),
+        ),
+      );
       await db.assets.where("roomId").equals(roomId).delete();
       await db.tasks.where("roomId").equals(roomId).delete();
       await db.turns.where("roomId").equals(roomId).delete();
+      await db.canvasGraphs.delete(roomId);
       await db.rooms.delete(roomId);
     },
   );
@@ -70,6 +88,10 @@ export async function submitGenerationBatch(input: {
   count: number;
   keyFingerprint: string;
   referenceUploads: ReferenceUpload[];
+  canvas?: {
+    parentNodeId?: string;
+    origin?: { x: number; y: number };
+  };
 }): Promise<Turn> {
   const request = generationRequestSchema.parse(input.request);
   const count = batchCountSchema.parse(input.count);
@@ -108,26 +130,91 @@ export async function submitGenerationBatch(input: {
     updatedAt: now,
   }));
 
-  await db.transaction("rw", db.turns, db.tasks, db.rooms, async () => {
-    await db.turns.add(turn);
-    await db.tasks.bulkAdd(tasks);
-    const room = await db.rooms.get(input.roomId);
-    await db.rooms.update(input.roomId, {
-      title:
-        isDefaultRoomTitle(room?.title)
-          ? request.prompt.replace(/\s+/g, " ").slice(0, 32)
-          : room?.title,
-      updatedAt: now,
-    });
-  });
+  await db.transaction(
+    "rw",
+    db.turns,
+    db.tasks,
+    db.rooms,
+    db.canvasGraphs,
+    async () => {
+      await db.turns.add(turn);
+      await db.tasks.bulkAdd(tasks);
+      const room = await db.rooms.get(input.roomId);
+      await db.rooms.update(input.roomId, {
+        title:
+          isDefaultRoomTitle(room?.title)
+            ? request.prompt.replace(/\s+/g, " ").slice(0, 32)
+            : room?.title,
+        updatedAt: now,
+      });
+      if (input.canvas) {
+        const current =
+          (await db.canvasGraphs.get(input.roomId)) ??
+          createEmptyCanvasGraph(input.roomId, now);
+        await db.canvasGraphs.put(
+          attachTaskNodes(current, {
+            localTaskIds: taskIds,
+            parentNodeId: input.canvas.parentNodeId,
+            prompt: request.prompt,
+            origin: input.canvas.origin,
+          }, now),
+        );
+      }
+    },
+  );
 
   return turn;
+}
+
+export async function loadCanvasGraph(roomId: string): Promise<CanvasGraph> {
+  return (
+    (await db.canvasGraphs.get(roomId)) ?? createEmptyCanvasGraph(roomId)
+  );
+}
+
+export async function ensureCanvasGraph(roomId: string): Promise<CanvasGraph> {
+  const existing = await db.canvasGraphs.get(roomId);
+  if (existing) return existing;
+  const created = createEmptyCanvasGraph(roomId);
+  await db.canvasGraphs.put(created);
+  return created;
+}
+
+export async function saveCanvasGraph(graph: CanvasGraph): Promise<void> {
+  await db.canvasGraphs.put({ ...graph, updatedAt: Date.now() });
 }
 
 export async function storeReferenceUpload(
   upload: ReferenceUpload,
 ): Promise<void> {
   await db.referenceUploads.put(upload);
+}
+
+export async function placeReferencesOnCanvas(
+  roomId: string,
+  uploads: Array<{
+    id: string;
+    temporaryUrl: string;
+    displayName: string;
+  }>,
+  origin?: { x: number; y: number },
+): Promise<void> {
+  if (uploads.length === 0) return;
+  const now = Date.now();
+  const current =
+    (await db.canvasGraphs.get(roomId)) ?? createEmptyCanvasGraph(roomId, now);
+  await db.canvasGraphs.put(
+    placeReferenceNodes(current, uploads, origin, now),
+  );
+}
+
+export async function selectCanvasGraphNode(
+  roomId: string,
+  nodeId: string | undefined,
+): Promise<void> {
+  const current =
+    (await db.canvasGraphs.get(roomId)) ?? createEmptyCanvasGraph(roomId);
+  await db.canvasGraphs.put(selectCanvasNode(current, nodeId));
 }
 
 export async function toggleAssetFavorite(assetId: string): Promise<void> {
@@ -179,6 +266,7 @@ export async function exportWorkspaceData(): Promise<string> {
     referenceUploads,
     accountSnapshots,
     collections,
+    canvasGraphs,
   ] = await Promise.all([
       db.rooms.toArray(),
       db.turns.toArray(),
@@ -187,11 +275,12 @@ export async function exportWorkspaceData(): Promise<string> {
       db.referenceUploads.toArray(),
       db.accountSnapshots.toArray(),
       db.collections.toArray(),
+      db.canvasGraphs.toArray(),
     ]);
 
   return JSON.stringify(
     {
-      schemaVersion: 2,
+      schemaVersion: 3,
       exportedAt: new Date().toISOString(),
       rooms,
       turns,
@@ -200,6 +289,7 @@ export async function exportWorkspaceData(): Promise<string> {
       referenceUploads,
       accountSnapshots,
       collections,
+      canvasGraphs,
     },
     null,
     2,
@@ -217,6 +307,8 @@ export async function clearWorkspaceData(): Promise<void> {
       db.referenceUploads,
       db.accountSnapshots,
       db.collections,
+      db.assetChunks,
+      db.canvasGraphs,
     ],
     async () => {
       await Promise.all([
@@ -227,6 +319,8 @@ export async function clearWorkspaceData(): Promise<void> {
         db.referenceUploads.clear(),
         db.accountSnapshots.clear(),
         db.collections.clear(),
+        db.assetChunks.clear(),
+        db.canvasGraphs.clear(),
       ]);
     },
   );

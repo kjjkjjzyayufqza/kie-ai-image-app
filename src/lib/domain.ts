@@ -32,8 +32,10 @@ export type AspectRatio =
   | "5:4"
   | "4:5";
 
+export type ImagePersistStatus = "pending" | "stored" | "failed";
+
 export interface GenerationRequest {
-  model: "gpt-image-2-text-to-image" | "gpt-image-2-image-to-image";
+  model: string;
   mode: GenerationMode;
   prompt: string;
   aspectRatio: AspectRatio;
@@ -54,7 +56,7 @@ export interface Turn {
   roomId: string;
   prompt: string;
   mode: GenerationMode;
-  model: GenerationRequest["model"];
+  model: string;
   parameters: Pick<GenerationRequest, "aspectRatio" | "resolution">;
   referenceUploadIds: string[];
   taskIds: string[];
@@ -70,7 +72,7 @@ export interface GenerationTask {
   turnId: string;
   batchId: string;
   batchIndex: number;
-  model: GenerationRequest["model"];
+  model: string;
   requestSnapshot: GenerationRequest;
   status: TaskStatus;
   failureCode?: string;
@@ -108,6 +110,11 @@ export interface Asset {
   height?: number;
   createdAt: number;
   lastCheckedAt?: number;
+  persistStatus?: ImagePersistStatus;
+  persistError?: string;
+  byteLength?: number;
+  mimeType?: string;
+  chunkCount?: number;
 }
 
 export interface ReferenceUpload {
@@ -141,6 +148,54 @@ export interface AssetCollection {
   id: string;
   name: string;
   createdAt: number;
+}
+
+export interface AssetChunkRecord {
+  id: string;
+  assetId: string;
+  chunkIndex: number;
+  totalChunks: number;
+  codec: "gzip";
+  originalByteLength: number;
+  mimeType: string;
+  bytes: ArrayBuffer;
+}
+
+export interface CanvasViewport {
+  x: number;
+  y: number;
+  zoom: number;
+}
+
+export interface CanvasNode {
+  id: string;
+  kind: "image" | "generating" | "reference";
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  assetId?: string;
+  localTaskId?: string;
+  parentId?: string;
+  prompt?: string;
+  referenceUploadId?: string;
+  previewUrl?: string;
+}
+
+export interface CanvasEdge {
+  id: string;
+  sourceId: string;
+  targetId: string;
+  kind: "iteration";
+}
+
+export interface CanvasGraph {
+  roomId: string;
+  viewport: CanvasViewport;
+  nodes: CanvasNode[];
+  edges: CanvasEdge[];
+  selectedNodeId?: string;
+  updatedAt: number;
 }
 
 export interface KieTaskResult {

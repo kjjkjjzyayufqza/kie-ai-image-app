@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { downloadBlob, openExternalUrl } from "@/lib/browser-actions";
+import { loadAssetBytes } from "@/lib/asset-blob-store";
 import type { GenerationRequest, KieTaskResult, ReferenceUpload } from "@/lib/domain";
 import { t } from "@/i18n/runtime";
 import { isRenderableKieUrl } from "@/lib/kie-urls";
@@ -50,6 +51,15 @@ const downloadSchema = z.object({
   data: z.object({ url: z.string().url() }),
 });
 
+const catalogSchema = z.object({
+  ok: z.literal(true),
+  data: z.object({
+    models: z.array(z.unknown()),
+    costs: z.record(z.string(), z.record(z.string(), z.number())),
+    source: z.enum(["live", "fallback"]),
+  }),
+});
+
 export class KieClientError extends Error {
   constructor(public readonly code: string, message: string) {
     super(message);
@@ -94,6 +104,50 @@ export async function fetchKieCredits(apiKey: string) {
   return creditsSchema.parse(response).data;
 }
 
+export async function fetchKieImageCatalog(apiKey: string) {
+  const response = await postKie("/api/kie/models", apiKey, {}, 25_000);
+  return catalogSchema.parse(response).data;
+}
+
+export async function fetchKieImageBytes(
+  apiKey: string,
+  url: string,
+): Promise<{ bytes: Uint8Array; mimeType?: string }> {
+  let response: Response;
+  try {
+    response = await fetch("/api/kie/download-file", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ url }),
+      cache: "no-store",
+      credentials: "same-origin",
+      redirect: "error",
+      signal: AbortSignal.timeout(120_000),
+    });
+  } catch {
+    throw new KieClientError("NETWORK_ERROR", t("errors.networkUnknown"));
+  }
+
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => null)) as {
+      error?: { code?: string; message?: string };
+    } | null;
+    throw new KieClientError(
+      payload?.error?.code ?? "DOWNLOAD_FAILED",
+      payload?.error?.message ?? t("errors.downloadFailed"),
+    );
+  }
+
+  const mimeType = response.headers.get("content-type") ?? undefined;
+  return {
+    bytes: new Uint8Array(await response.arrayBuffer()),
+    mimeType: mimeType?.split(";", 1)[0],
+  };
+}
+
 export async function fetchKieDownloadUrl(
   apiKey: string,
   url: string,
@@ -112,6 +166,19 @@ export async function fetchKieDownloadUrl(
  * with Content-Disposition. Falls back to a temporary Kie download URL when
  * the streaming endpoint fails.
  */
+export async function downloadStoredAsset(
+  assetId: string,
+  filename: string,
+): Promise<boolean> {
+  const stored = await loadAssetBytes(assetId);
+  if (!stored) return false;
+  downloadBlob(
+    new Blob([Uint8Array.from(stored.bytes)], { type: stored.mimeType }),
+    filename,
+  );
+  return true;
+}
+
 export async function downloadKieAsset(
   apiKey: string,
   url: string,

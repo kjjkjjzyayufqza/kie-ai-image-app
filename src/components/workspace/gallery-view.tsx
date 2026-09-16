@@ -42,11 +42,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  EmptyState,
-  ImageLoadFrame,
-} from "@/components/workspace/ui-states";
+import { EmptyState } from "@/components/workspace/ui-states";
 import { ImagePreviewDialog } from "@/components/workspace/image-preview-dialog";
+import { StoredImage } from "@/components/workspace/stored-image";
+import { useAssetObjectUrl } from "@/hooks/use-asset-object-url";
 import type {
   Asset,
   AssetCollection,
@@ -54,10 +53,9 @@ import type {
   Turn,
 } from "@/lib/domain";
 import { copyText } from "@/lib/browser-actions";
-import { downloadKieAsset } from "@/lib/kie-client";
+import { downloadKieAsset, downloadStoredAsset } from "@/lib/kie-client";
 import {
   markAssetAvailable,
-  markAssetLoadError,
   createAssetCollection,
   setAssetTags,
   toggleAssetFavorite,
@@ -142,11 +140,11 @@ export function GalleryView({
     }
     setDownloadingId(asset.id);
     try {
-      await downloadKieAsset(
-        apiKey,
-        asset.url,
-        `kie-gallery-${asset.outputOrdinal + 1}.png`,
-      );
+      const filename = `kie-gallery-${asset.outputOrdinal + 1}.png`;
+      const stored = await downloadStoredAsset(asset.id, filename);
+      if (!stored) {
+        await downloadKieAsset(apiKey, asset.url, filename);
+      }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t("gallery.downloadFailed"));
     } finally {
@@ -268,28 +266,18 @@ export function GalleryView({
                   >
                     <div className="relative aspect-square bg-neutral-100">
                       {asset.isRenderable && asset.availability !== "load-error" ? (
-                        <ImageLoadFrame loaded={loaded}>
-                          {/* eslint-disable-next-line @next/next/no-img-element */}
-                          <img
-                            src={asset.url}
-                            alt={turn?.prompt ?? t("gallery.generatedAlt")}
-                            loading="lazy"
-                            referrerPolicy="no-referrer"
-                            className={cn(
-                              "size-full object-cover transition-opacity duration-300",
-                              loaded ? "opacity-100" : "opacity-0",
-                            )}
-                            onLoad={() => {
-                              setLoadedIds((current) => {
-                                const next = new Set(current);
-                                next.add(asset.id);
-                                return next;
-                              });
-                              void markAssetAvailable(asset.id);
-                            }}
-                            onError={() => void markAssetLoadError(asset.id)}
-                          />
-                        </ImageLoadFrame>
+                        <StoredImage
+                          asset={asset}
+                          alt={turn?.prompt ?? t("gallery.generatedAlt")}
+                          onLoad={() => {
+                            setLoadedIds((current) => {
+                              const next = new Set(current);
+                              next.add(asset.id);
+                              return next;
+                            });
+                            void markAssetAvailable(asset.id);
+                          }}
+                        />
                       ) : (
                         <div className="flex size-full flex-col items-center justify-center gap-2 p-3 text-center sm:p-4">
                           {asset.isRenderable ? (
@@ -429,12 +417,9 @@ export function GalleryView({
         )}
       </div>
 
-      <ImagePreviewDialog
-        open={Boolean(previewAsset)}
+      <GalleryPreview
+        asset={previewAsset}
         onOpenChange={(open) => !open && setPreviewAsset(undefined)}
-        src={previewAsset?.url}
-        alt={t("gallery.generatedLargeAlt")}
-        title={t("gallery.previewTitle")}
       />
 
       <Dialog open={collectionDialogOpen} onOpenChange={setCollectionDialogOpen}>
@@ -580,5 +565,25 @@ function AssetMetadataEditor({
         </div>
       </PopoverContent>
     </Popover>
+  );
+}
+
+function GalleryPreview({
+  asset,
+  onOpenChange,
+}: {
+  asset?: Asset;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const { t } = useI18n();
+  const { src } = useAssetObjectUrl(asset);
+  return (
+    <ImagePreviewDialog
+      open={Boolean(asset)}
+      onOpenChange={onOpenChange}
+      src={src}
+      alt={t("gallery.generatedLargeAlt")}
+      title={t("gallery.previewTitle")}
+    />
   );
 }

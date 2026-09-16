@@ -57,7 +57,12 @@ import {
   saveComposerDraft,
   type ComposerDraft,
 } from "@/lib/composer-draft";
-import { uploadReferenceImage } from "@/lib/kie-client";
+import { ModelPicker, defaultModelId } from "@/components/workspace/model-picker";
+import { useImageCatalog } from "@/hooks/use-image-catalog";
+import {
+  modelsForMode,
+  resolveModelContract,
+} from "@/lib/image-catalog";
 import {
   aspectRatios,
   batchCountSchema,
@@ -65,10 +70,9 @@ import {
   gptImage2CreditsPerImage,
   resolutions,
 } from "@/lib/model-registry";
-import {
-  storeReferenceUpload,
-  submitGenerationBatch,
-} from "@/lib/workspace-service";
+import { mergeReference } from "@/lib/canvas-references";
+import { ingestReferenceFiles } from "@/lib/reference-ingest";
+import { submitGenerationBatch } from "@/lib/workspace-service";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/i18n/i18n-provider";
 
@@ -91,6 +95,12 @@ interface ComposerProps {
   availableCredits?: number;
   observedCreditPrices: Partial<Record<ImageResolution, number>>;
   creditsStale: boolean;
+  layout?: "chat" | "canvas";
+  canvasParentNodeId?: string;
+  canvasPickedReference?: ReferenceUpload;
+  canvasDrop?: { files: File[]; origin: { x: number; y: number } } | null;
+  onCanvasDropConsumed?: () => void;
+  onReferenceFocus?: (uploadId: string) => void;
   onOpenSettings: () => void;
   onSubmitted: () => void;
 }
@@ -102,13 +112,21 @@ export function Composer({
   availableCredits,
   observedCreditPrices,
   creditsStale,
+  layout = "chat",
+  canvasParentNodeId,
+  canvasPickedReference,
+  canvasDrop,
+  onCanvasDropConsumed,
+  onReferenceFocus,
   onOpenSettings,
   onSubmitted,
 }: ComposerProps) {
   const { t } = useI18n();
+  const catalog = useImageCatalog(apiKey);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dropDepthRef = useRef(0);
   const [mode, setMode] = useState<GenerationMode>("image-to-image");
+  const [modelId, setModelId] = useState("gpt-image-2-image-to-image");
   const [prompt, setPrompt] = useState("");
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>("auto");
   const [resolution, setResolution] = useState<ImageResolution>("1K");
@@ -129,6 +147,7 @@ export function Composer({
   );
   const draftRef = useRef<ComposerDraft>({
     mode: "image-to-image",
+    model: "gpt-image-2-image-to-image",
     prompt: "",
     aspectRatio: "auto",
     resolution: "1K",
@@ -153,6 +172,9 @@ export function Composer({
         if (cancelled) return;
         draftRef.current = saved;
         setMode(saved.mode);
+        setModelId(
+          saved.model ?? defaultModelId(catalog, saved.mode),
+        );
         setPrompt(saved.prompt);
         setAspectRatio(saved.aspectRatio);
         setResolution(saved.resolution);
@@ -168,8 +190,14 @@ export function Composer({
   const count = Number(countText);
   const isCountValid = batchCountSchema.safeParse(count).success;
   const observedUnitCredits = observedCreditPrices[resolution];
+  const selectedModel =
+    modelsForMode(catalog, mode).find((model) => model.id === modelId) ??
+    modelsForMode(catalog, mode)[0];
+  const catalogUnitCredits = selectedModel?.credits[resolution];
   const unitCredits =
-    observedUnitCredits ?? gptImage2CreditsPerImage[resolution];
+    observedUnitCredits ??
+    catalogUnitCredits ??
+    gptImage2CreditsPerImage[resolution];
   const estimatedCredits = isCountValid ? unitCredits * count : undefined;
   const estimatedRemaining =
     availableCredits !== undefined && estimatedCredits !== undefined
@@ -203,9 +231,33 @@ export function Composer({
   const canSubmit = disabledReason === null;
 
   const changeMode = (nextMode: GenerationMode) => {
+    const nextModel = defaultModelId(catalog, nextMode, modelId);
     setMode(nextMode);
-    persistDraft({ mode: nextMode });
+    setModelId(nextModel);
+    persistDraft({ mode: nextMode, model: nextModel });
     setReferenceError(null);
+  };
+
+  const changeModel = (nextModel: string) => {
+    const contract = resolveModelContract(nextModel, catalog.models);
+    const nextRatio =
+      contract && !contract.supportedAspectRatios.includes(aspectRatio)
+        ? (contract.supportedAspectRatios[0] ?? "1:1")
+        : aspectRatio;
+    const nextResolution =
+      contract &&
+      contract.resolutionField === "resolution" &&
+      !contract.supportedResolutions.includes(resolution)
+        ? (contract.supportedResolutions[0] ?? "1K")
+        : resolution;
+    setModelId(nextModel);
+    if (nextRatio !== aspectRatio) setAspectRatio(nextRatio);
+    if (nextResolution !== resolution) setResolution(nextResolution);
+    persistDraft({
+      model: nextModel,
+      aspectRatio: nextRatio,
+      resolution: nextResolution,
+    });
   };
 
   const changeAspectRatio = (nextRatio: AspectRatio) => {
@@ -247,7 +299,10 @@ export function Composer({
     [referenceUploads.length, t],
   );
 
-  const handleFiles = async (fileList: FileList | File[] | null) => {
+  const handleFiles = async (
+    fileList: FileList | File[] | null,
+    origin?: { x: number; y: number },
+  ) => {
     const files = fileList
       ? Array.from(fileList).filter((file) => file.type.startsWith("image/"))
       : [];
@@ -273,17 +328,26 @@ export function Composer({
     setUploading(true);
     setUploadProgress({ current: 0, total: files.length });
     try {
-      const uploaded: ReferenceUpload[] = [];
-      for (let index = 0; index < files.length; index += 1) {
-        const file = files[index]!;
-        setUploadProgress({ current: index + 1, total: files.length });
-        const result = await uploadReferenceImage(apiKey, keyFingerprint, file);
-        await storeReferenceUpload(result);
-        uploaded.push(result);
+      const uploaded = await ingestReferenceFiles({
+        files,
+        apiKey,
+        keyFingerprint,
+        roomId,
+        placeOnCanvas: layout === "canvas",
+        origin,
+      });
+      if (layout === "canvas") {
+        changeMode("image-to-image");
       }
       setReferenceUploads((current) => {
-        const next = [...current, ...uploaded];
-        persistDraft({ referenceUploads: next });
+        let next = current;
+        for (const upload of uploaded) {
+          next = mergeReference(next, upload, MAX_REFERENCE_COUNT);
+        }
+        persistDraft({
+          referenceUploads: next,
+          mode: layout === "canvas" ? "image-to-image" : mode,
+        });
         return next;
       });
       toast.success(t("composer.uploadedReferences", { count: uploaded.length }));
@@ -299,8 +363,44 @@ export function Composer({
     }
   };
 
+  const handleFilesRef = useRef(handleFiles);
+  handleFilesRef.current = handleFiles;
+  const consumeDropRef = useRef(onCanvasDropConsumed);
+  consumeDropRef.current = onCanvasDropConsumed;
+
+  useEffect(() => {
+    if (!canvasDrop) return;
+    void handleFilesRef
+      .current(canvasDrop.files, canvasDrop.origin)
+      .finally(() => consumeDropRef.current?.());
+  }, [canvasDrop]);
+
+  useEffect(() => {
+    if (!canvasPickedReference) return;
+    setMode("image-to-image");
+    setReferenceUploads((current) => {
+      try {
+        const next = mergeReference(
+          current,
+          canvasPickedReference,
+          MAX_REFERENCE_COUNT,
+        );
+        persistDraft({
+          referenceUploads: next,
+          mode: "image-to-image",
+        });
+        return next;
+      } catch {
+        toast.error(t("composer.maxReferences", { max: MAX_REFERENCE_COUNT }));
+        return current;
+      }
+    });
+  }, [canvasPickedReference?.id, persistDraft, t]);
+
+  const acceptsReferenceDrop = mode === "image-to-image" || layout === "canvas";
+
   const onDragEnter = (event: React.DragEvent) => {
-    if (mode !== "image-to-image") return;
+    if (!acceptsReferenceDrop) return;
     event.preventDefault();
     event.stopPropagation();
     dropDepthRef.current += 1;
@@ -310,7 +410,7 @@ export function Composer({
   };
 
   const onDragLeave = (event: React.DragEvent) => {
-    if (mode !== "image-to-image") return;
+    if (!acceptsReferenceDrop) return;
     event.preventDefault();
     event.stopPropagation();
     dropDepthRef.current = Math.max(0, dropDepthRef.current - 1);
@@ -318,14 +418,14 @@ export function Composer({
   };
 
   const onDragOver = (event: React.DragEvent) => {
-    if (mode !== "image-to-image") return;
+    if (!acceptsReferenceDrop) return;
     event.preventDefault();
     event.stopPropagation();
     event.dataTransfer.dropEffect = "copy";
   };
 
   const onDrop = (event: React.DragEvent) => {
-    if (mode !== "image-to-image") return;
+    if (!acceptsReferenceDrop) return;
     event.preventDefault();
     event.stopPropagation();
     dropDepthRef.current = 0;
@@ -357,10 +457,7 @@ export function Composer({
 
   const performSubmit = async () => {
     const request: GenerationRequest = {
-      model:
-        mode === "image-to-image"
-          ? "gpt-image-2-image-to-image"
-          : "gpt-image-2-text-to-image",
+      model: selectedModel?.id ?? modelId,
       mode,
       prompt,
       aspectRatio,
@@ -394,6 +491,10 @@ export function Composer({
         keyFingerprint,
         referenceUploads:
           mode === "image-to-image" ? referenceUploads : [],
+        canvas:
+          layout === "canvas"
+            ? { parentNodeId: canvasParentNodeId }
+            : undefined,
       });
       setReferenceError(null);
       onSubmitted();
@@ -417,7 +518,7 @@ export function Composer({
         onDragOver={onDragOver}
         onDrop={onDrop}
       >
-        {mode === "image-to-image" ? (
+        {mode === "image-to-image" || layout === "canvas" ? (
           <div
             className={cn(
               "border-b bg-neutral-50/70 p-2 transition-colors duration-200",
@@ -491,7 +592,8 @@ export function Composer({
                           src={upload.temporaryUrl}
                           alt={upload.displayName}
                           referrerPolicy="no-referrer"
-                          className="size-full object-cover"
+                          className="size-full cursor-pointer object-cover"
+                          onClick={() => onReferenceFocus?.(upload.id)}
                           onError={() =>
                             setBrokenPreviewIds((current) => {
                               const next = new Set(current);
@@ -503,7 +605,7 @@ export function Composer({
                       )}
                       <button
                         type="button"
-                        className="absolute inset-0 grid place-items-center bg-black/55 text-white opacity-100 sm:opacity-0 sm:group-focus-within:opacity-100 sm:group-hover:opacity-100"
+                        className="absolute right-0 top-0 grid size-5 place-items-center bg-black/70 text-white opacity-100 sm:opacity-0 sm:group-focus-within:opacity-100 sm:group-hover:opacity-100"
                         onClick={() => {
                           setReferenceUploads((current) => {
                             const next = current.filter(
@@ -521,7 +623,7 @@ export function Composer({
                         }}
                         aria-label={t("composer.removeReference", { name: upload.displayName })}
                       >
-                        <Trash2 className="size-4" />
+                        <Trash2 className="size-3" />
                       </button>
                     </div>
                   );
@@ -654,6 +756,13 @@ export function Composer({
               {t("chat.textToImage")}
             </Button>
           </div>
+
+          <ModelPicker
+            catalog={catalog}
+            mode={mode}
+            value={modelId}
+            onChange={changeModel}
+          />
 
           <Select
             value={aspectRatio}
