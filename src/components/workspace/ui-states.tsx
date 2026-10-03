@@ -135,7 +135,12 @@ export function ImageLoadFrame({
   className?: string;
 }) {
   return (
-    <div className={cn("relative size-full overflow-hidden bg-neutral-100", className)}>
+    <div
+      className={cn(
+        "transparency-grid relative size-full overflow-hidden",
+        className,
+      )}
+    >
       {!loaded ? (
         <div className="ui-skeleton absolute inset-0 bg-neutral-100" aria-hidden />
       ) : null}

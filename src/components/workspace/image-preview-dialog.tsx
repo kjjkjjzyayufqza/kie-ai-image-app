@@ -243,17 +243,19 @@ export function ImagePreviewDialog({
           {src ? (
             // Kie result URLs are rendered directly and never pass through Next Image.
             // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={src}
-              alt={alt}
-              referrerPolicy="no-referrer"
-              draggable={false}
-              className={cn(
-                "select-none object-contain",
-                fit ? "max-h-full max-w-full" : "mx-auto h-auto max-w-none",
-              )}
-              style={fit ? undefined : { width: `${zoom}%` }}
-            />
+            <span className="transparency-grid inline-block max-h-full max-w-full">
+              <img
+                src={src}
+                alt={alt}
+                referrerPolicy="no-referrer"
+                draggable={false}
+                className={cn(
+                  "select-none object-contain",
+                  fit ? "max-h-full max-w-full" : "mx-auto h-auto max-w-none",
+                )}
+                style={fit ? undefined : { width: `${zoom}%` }}
+              />
+            </span>
           ) : null}
         </div>
         {!isFullscreen ? (

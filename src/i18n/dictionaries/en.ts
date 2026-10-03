@@ -120,6 +120,12 @@ export const en = {
     persistFailed: "Local image save failed",
     aspectRatioAria: "Aspect ratio",
     resolutionAria: "Resolution",
+    backgroundAria: "Background",
+    backgroundAuto: "Auto",
+    backgroundOpaque: "Opaque",
+    backgroundTransparent: "Transparent",
+    transparentHint:
+      "For 2K or 4K transparent output, describe an isolated subject with no backdrop, scenery, or shadow. For edits, ask to extract the subject and keep the background transparent.",
     countAria: "Generation count",
     generate: "Generate {count}",
     generating: "Submitting",

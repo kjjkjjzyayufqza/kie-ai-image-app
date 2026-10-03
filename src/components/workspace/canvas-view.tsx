@@ -465,7 +465,7 @@ function CanvasNodeCard({
       )}
       style={{ left: x, top: y, width, height }}
     >
-      <div className="relative size-full bg-neutral-100">
+      <div className="transparency-grid relative size-full">
         {src ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img

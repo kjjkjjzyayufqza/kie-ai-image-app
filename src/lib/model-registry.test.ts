@@ -117,6 +117,91 @@ describe("generationRequestSchema", () => {
     }
   });
 
+  it("sends GPT Image 2.5 background and keeps 1K-only ratios at 1K", () => {
+    const payload = toKieCreatePayload({
+      model: "gpt-image-2-5-flare-text-to-image",
+      mode: "text-to-image",
+      prompt: "Isolated ceramic lamp, no backdrop or shadow",
+      aspectRatio: "27:16",
+      resolution: "1K",
+      background: "transparent",
+      inputUrls: [],
+    });
+
+    expect(payload).toEqual({
+      model: "gpt-image-2-5-flare-text-to-image",
+      input: {
+        prompt: "Isolated ceramic lamp, no backdrop or shadow",
+        aspect_ratio: "27:16",
+        resolution: "1K",
+        background: "transparent",
+      },
+    });
+  });
+
+  it("rejects GPT Image 2.5 high resolution for 1K-only ratios", () => {
+    const result = generationRequestSchema.safeParse({
+      model: "gpt-image-2-5-sunburst-image-to-image",
+      mode: "image-to-image",
+      prompt: "Extract the subject and keep the background transparent",
+      aspectRatio: "9:8",
+      resolution: "2K",
+      background: "transparent",
+      inputUrls: ["https://tempfile.redpandaai.co/reference.png"],
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it("does not send background for models that lack the parameter", () => {
+    const rejected = generationRequestSchema.safeParse({
+      model: "gpt-image-2-text-to-image",
+      mode: "text-to-image",
+      prompt: "Poster",
+      aspectRatio: "1:1",
+      resolution: "1K",
+      background: "transparent",
+      inputUrls: [],
+    });
+    expect(rejected.success).toBe(false);
+
+    const payload = toKieCreatePayload({
+      model: "grok-imagine-image-2-0/image-edit",
+      mode: "image-to-image",
+      prompt: "Change the lighting",
+      aspectRatio: "1:1",
+      resolution: "2K",
+      inputUrls: ["https://tempfile.redpandaai.co/reference.png"],
+    });
+    expect(payload).toEqual({
+      model: "grok-imagine-image-2-0/image-edit",
+      input: {
+        prompt: "Change the lighting",
+        aspect_ratio: "1:1",
+        image_urls: ["https://tempfile.redpandaai.co/reference.png"],
+      },
+    });
+  });
+
+  it("maps nano banana 2 lite references onto image_urls", () => {
+    const payload = toKieCreatePayload({
+      model: "nano-banana-2-lite",
+      mode: "image-to-image",
+      prompt: "Keep the product",
+      aspectRatio: "4:1",
+      resolution: "1K",
+      inputUrls: ["https://tempfile.redpandaai.co/reference.png"],
+    });
+
+    expect(payload.input).toMatchObject({
+      prompt: "Keep the product",
+      aspect_ratio: "4:1",
+      image_urls: ["https://tempfile.redpandaai.co/reference.png"],
+    });
+    expect(payload.input).not.toHaveProperty("resolution");
+    expect(payload.input).not.toHaveProperty("background");
+  });
+
   it("rejects a missing model id instead of substituting GPT Image 2", () => {
     const result = generationRequestSchema.safeParse({
       mode: "text-to-image",

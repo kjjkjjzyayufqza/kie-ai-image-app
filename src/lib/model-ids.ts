@@ -15,6 +15,16 @@ export const aspectRatios = [
   "9:21",
   "5:4",
   "4:5",
+  "27:16",
+  "16:27",
+  "9:8",
+  "8:9",
+  "1:4",
+  "4:1",
+  "1:8",
+  "8:1",
 ] as const;
 
 export const resolutions = ["1K", "2K", "4K"] as const;
+
+export const imageBackgrounds = ["auto", "opaque", "transparent"] as const;

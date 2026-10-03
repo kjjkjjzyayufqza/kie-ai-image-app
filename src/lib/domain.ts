@@ -14,6 +14,7 @@ export const TASK_STATES = [
 export type TaskStatus = (typeof TASK_STATES)[number];
 export type GenerationMode = "text-to-image" | "image-to-image";
 export type ImageResolution = "1K" | "2K" | "4K";
+export type ImageBackground = "auto" | "opaque" | "transparent";
 export type AspectRatio =
   | "auto"
   | "1:1"
@@ -30,7 +31,15 @@ export type AspectRatio =
   | "21:9"
   | "9:21"
   | "5:4"
-  | "4:5";
+  | "4:5"
+  | "27:16"
+  | "16:27"
+  | "9:8"
+  | "8:9"
+  | "1:4"
+  | "4:1"
+  | "1:8"
+  | "8:1";
 
 export type ImagePersistStatus = "pending" | "stored" | "failed";
 
@@ -40,6 +49,7 @@ export interface GenerationRequest {
   prompt: string;
   aspectRatio: AspectRatio;
   resolution: ImageResolution;
+  background?: ImageBackground;
   inputUrls: string[];
 }
 
@@ -57,7 +67,9 @@ export interface Turn {
   prompt: string;
   mode: GenerationMode;
   model: string;
-  parameters: Pick<GenerationRequest, "aspectRatio" | "resolution">;
+  parameters: Pick<GenerationRequest, "aspectRatio" | "resolution"> & {
+    background?: ImageBackground;
+  };
   referenceUploadIds: string[];
   taskIds: string[];
   createdAt: number;

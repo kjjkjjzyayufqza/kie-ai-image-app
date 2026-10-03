@@ -209,6 +209,14 @@ export function TaskCard({ task, asset, apiKey, keyFingerprint }: TaskCardProps)
       <div className="flex h-9 items-center justify-between gap-1.5 border-t px-2 text-[11px] text-muted-foreground sm:gap-2 sm:px-2.5">
         <span className="truncate">{task.requestSnapshot.resolution}</span>
         <span className="truncate">{task.requestSnapshot.aspectRatio}</span>
+        {task.requestSnapshot.background &&
+        task.requestSnapshot.background !== "auto" ? (
+          <span className="truncate">
+            {task.requestSnapshot.background === "transparent"
+              ? t("composer.backgroundTransparent")
+              : t("composer.backgroundOpaque")}
+          </span>
+        ) : null}
         <span className="truncate tabular-nums">
           {task.creditsConsumed !== undefined
             ? `${task.creditsConsumed} credits`

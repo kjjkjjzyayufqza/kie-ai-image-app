@@ -8,9 +8,9 @@ import {
   resolveModelContract,
   type ImageModelDefinition,
 } from "@/lib/image-catalog";
-import { aspectRatios, resolutions } from "@/lib/model-ids";
+import { aspectRatios, imageBackgrounds, resolutions } from "@/lib/model-ids";
 
-export { aspectRatios, resolutions };
+export { aspectRatios, imageBackgrounds, resolutions };
 
 export const gptImage2CreditsPerImage: Record<ImageResolution, number> = {
   "1K": 6,
@@ -33,14 +33,6 @@ export function estimateCreditsForModel(
   return estimateModelCredits(modelId, resolution, count);
 }
 
-const unsupportedHighResolutionRatios = new Set([
-  "5:4",
-  "4:5",
-  "3:1",
-  "1:3",
-  "9:21",
-]);
-
 const UNKNOWN_MODEL_MESSAGE = "Unknown or unsupported image model.";
 const MODEL_MODE_MISMATCH_MESSAGE = "Model and generation mode do not match.";
 
@@ -56,6 +48,7 @@ export const generationRequestSchema = z
     prompt: z.string().trim().min(1).max(20_000),
     aspectRatio: z.enum(aspectRatios),
     resolution: z.enum(resolutions),
+    background: z.enum(imageBackgrounds).optional(),
     inputUrls: z.array(z.string().url().max(2_048)).max(16),
   })
   .strict()
@@ -129,10 +122,31 @@ export const generationRequestSchema = z
       });
     }
 
+    const maxImages = contract.maxInputImages ?? 16;
+    if (expectsImageInput && input.inputUrls.length > maxImages) {
+      context.addIssue({
+        code: "custom",
+        path: ["inputUrls"],
+        message: `This model accepts at most ${maxImages} reference images.`,
+      });
+    }
+
     if (
-      input.model.startsWith("gpt-image-2") &&
+      input.background &&
+      input.background !== "auto" &&
+      !contract.supportsBackground
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["background"],
+        message: "This model does not support a background mode.",
+      });
+    }
+
+    if (
+      contract.resolutionField !== "none" &&
       input.resolution !== "1K" &&
-      unsupportedHighResolutionRatios.has(input.aspectRatio)
+      contract.oneKOnlyAspectRatios?.includes(input.aspectRatio)
     ) {
       context.addIssue({
         code: "custom",
@@ -169,6 +183,10 @@ export function toKieCreatePayload(input: GenerationRequest) {
     payloadInput.quality =
       contract.qualityMap?.[validated.resolution] ??
       (validated.resolution === "1K" ? "basic" : "high");
+  }
+
+  if (contract.supportsBackground) {
+    payloadInput.background = validated.background ?? "auto";
   }
 
   if (validated.mode === "image-to-image") {

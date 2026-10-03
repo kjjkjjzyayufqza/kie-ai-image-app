@@ -110,6 +110,7 @@ export async function submitGenerationBatch(input: {
     parameters: {
       aspectRatio: request.aspectRatio,
       resolution: request.resolution,
+      ...(request.background ? { background: request.background } : {}),
     },
     referenceUploadIds: input.referenceUploads.map((upload) => upload.id),
     taskIds,

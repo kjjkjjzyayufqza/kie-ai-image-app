@@ -25,6 +25,12 @@ export interface ImageModelDefinition {
   resolutionField: ResolutionField;
   supportedAspectRatios: readonly AspectRatio[];
   supportedResolutions: readonly ImageResolution[];
+  /** Aspect ratios the provider accepts only at 1K. */
+  oneKOnlyAspectRatios?: readonly AspectRatio[];
+  /** When true, createTask input accepts background auto | opaque | transparent. */
+  supportsBackground?: boolean;
+  /** Maximum reference images. Defaults to 16. */
+  maxInputImages?: number;
   credits: Record<ImageResolution, number>;
   qualityMap?: Partial<Record<ImageResolution, string>>;
 }
@@ -35,7 +41,62 @@ export interface ImageCatalog {
   source: "live" | "fallback";
 }
 
-const GPT_RATIOS = aspectRatios;
+const GPT_RATIOS = aspectRatios.filter(
+  (ratio) =>
+    ratio !== "27:16" &&
+    ratio !== "16:27" &&
+    ratio !== "9:8" &&
+    ratio !== "8:9" &&
+    ratio !== "1:4" &&
+    ratio !== "4:1" &&
+    ratio !== "1:8" &&
+    ratio !== "8:1",
+);
+const GPT_IMAGE_2_ONE_K_ONLY = [
+  "5:4",
+  "4:5",
+  "3:1",
+  "1:3",
+  "9:21",
+] as const satisfies readonly AspectRatio[];
+const GPT_25_RATIOS = [
+  "auto",
+  "1:1",
+  "3:2",
+  "2:3",
+  "4:3",
+  "3:4",
+  "16:9",
+  "9:16",
+  "21:9",
+  "27:16",
+  "16:27",
+  "9:8",
+  "8:9",
+] as const satisfies readonly AspectRatio[];
+const GPT_25_ONE_K_ONLY = [
+  "27:16",
+  "16:27",
+  "9:8",
+  "8:9",
+] as const satisfies readonly AspectRatio[];
+const NANO_LITE_RATIOS = [
+  "auto",
+  "1:1",
+  "1:4",
+  "1:8",
+  "2:3",
+  "3:2",
+  "3:4",
+  "4:1",
+  "4:3",
+  "4:5",
+  "5:4",
+  "8:1",
+  "9:16",
+  "16:9",
+  "21:9",
+] as const satisfies readonly AspectRatio[];
 const COMMON_RATIOS = [
   "1:1",
   "3:2",
@@ -94,6 +155,64 @@ function defineModel(
  */
 export const FALLBACK_IMAGE_MODELS: readonly ImageModelDefinition[] = [
   defineModel({
+    id: "gpt-image-2-5-flare-text-to-image",
+    label: "GPT Image 2.5 Flare",
+    family: "gpt-image",
+    mode: "text-to-image",
+    imageField: null,
+    resolutionField: "resolution",
+    supportedAspectRatios: GPT_25_RATIOS,
+    supportedResolutions: ALL_RESOLUTIONS,
+    oneKOnlyAspectRatios: GPT_25_ONE_K_ONLY,
+    supportsBackground: true,
+    maxInputImages: 16,
+    // Published Kie rates: 1K $0.03 = 6 credits, 2K $0.05 = 10 credits.
+    // 4K is not listed yet, so it follows the GPT Image 2 4K rate.
+    credits: credits(6, 10, 16),
+  }),
+  defineModel({
+    id: "gpt-image-2-5-flare-image-to-image",
+    label: "GPT Image 2.5 Flare Edit",
+    family: "gpt-image",
+    mode: "image-to-image",
+    imageField: "input_urls",
+    resolutionField: "resolution",
+    supportedAspectRatios: GPT_25_RATIOS,
+    supportedResolutions: ALL_RESOLUTIONS,
+    oneKOnlyAspectRatios: GPT_25_ONE_K_ONLY,
+    supportsBackground: true,
+    maxInputImages: 16,
+    credits: credits(6, 10, 16),
+  }),
+  defineModel({
+    id: "gpt-image-2-5-sunburst-text-to-image",
+    label: "GPT Image 2.5 Sunburst",
+    family: "gpt-image",
+    mode: "text-to-image",
+    imageField: null,
+    resolutionField: "resolution",
+    supportedAspectRatios: GPT_25_RATIOS,
+    supportedResolutions: ALL_RESOLUTIONS,
+    oneKOnlyAspectRatios: GPT_25_ONE_K_ONLY,
+    supportsBackground: true,
+    maxInputImages: 16,
+    credits: credits(6, 10, 16),
+  }),
+  defineModel({
+    id: "gpt-image-2-5-sunburst-image-to-image",
+    label: "GPT Image 2.5 Sunburst Edit",
+    family: "gpt-image",
+    mode: "image-to-image",
+    imageField: "input_urls",
+    resolutionField: "resolution",
+    supportedAspectRatios: GPT_25_RATIOS,
+    supportedResolutions: ALL_RESOLUTIONS,
+    oneKOnlyAspectRatios: GPT_25_ONE_K_ONLY,
+    supportsBackground: true,
+    maxInputImages: 16,
+    credits: credits(6, 10, 16),
+  }),
+  defineModel({
     id: "gpt-image-2-text-to-image",
     label: "GPT Image 2",
     family: "gpt-image",
@@ -102,6 +221,7 @@ export const FALLBACK_IMAGE_MODELS: readonly ImageModelDefinition[] = [
     resolutionField: "resolution",
     supportedAspectRatios: GPT_RATIOS,
     supportedResolutions: ALL_RESOLUTIONS,
+    oneKOnlyAspectRatios: GPT_IMAGE_2_ONE_K_ONLY,
     credits: credits(6, 10, 16),
   }),
   defineModel({
@@ -113,6 +233,8 @@ export const FALLBACK_IMAGE_MODELS: readonly ImageModelDefinition[] = [
     resolutionField: "resolution",
     supportedAspectRatios: GPT_RATIOS,
     supportedResolutions: ALL_RESOLUTIONS,
+    oneKOnlyAspectRatios: GPT_IMAGE_2_ONE_K_ONLY,
+    maxInputImages: 16,
     credits: credits(6, 10, 16),
   }),
   defineModel({
@@ -182,6 +304,29 @@ export const FALLBACK_IMAGE_MODELS: readonly ImageModelDefinition[] = [
     credits: credits(4, 6, 6),
   }),
   defineModel({
+    id: "grok-imagine-image-2-0/text-to-image",
+    label: "Grok Imagine 2.0",
+    family: "grok-imagine",
+    mode: "text-to-image",
+    imageField: null,
+    resolutionField: "none",
+    supportedAspectRatios: GROK_RATIOS,
+    supportedResolutions: ALL_RESOLUTIONS,
+    credits: credits(6),
+  }),
+  defineModel({
+    id: "grok-imagine-image-2-0/image-edit",
+    label: "Grok Imagine 2.0 Edit",
+    family: "grok-imagine",
+    mode: "image-to-image",
+    imageField: "image_urls",
+    resolutionField: "none",
+    supportedAspectRatios: GROK_RATIOS,
+    supportedResolutions: ALL_RESOLUTIONS,
+    maxInputImages: 5,
+    credits: credits(6),
+  }),
+  defineModel({
     id: "grok-imagine/text-to-image",
     label: "Grok Imagine",
     family: "grok-imagine",
@@ -248,7 +393,20 @@ export const FALLBACK_IMAGE_MODELS: readonly ImageModelDefinition[] = [
     resolutionField: "resolution",
     supportedAspectRatios: GPT_RATIOS,
     supportedResolutions: ALL_RESOLUTIONS,
-    credits: credits(6, 8, 12),
+    // Published Kie rates: 1K $0.04, 2K $0.06, 4K $0.09 (1 USD ≈ 200 credits).
+    credits: credits(8, 12, 18),
+  }),
+  defineModel({
+    id: "nano-banana-2-lite",
+    label: "Nano Banana 2 Lite",
+    family: "nano-banana",
+    mode: "both",
+    imageField: "image_urls",
+    resolutionField: "none",
+    supportedAspectRatios: NANO_LITE_RATIOS,
+    supportedResolutions: ALL_RESOLUTIONS,
+    maxInputImages: 10,
+    credits: credits(4),
   }),
   defineModel({
     id: "google/nano-banana",
@@ -474,6 +632,7 @@ function inferImageField(
 ): ImageInputField | null {
   if (mode === "text-to-image") return null;
   const lower = modelId.toLowerCase();
+  if (lower.includes("nano-banana-2-lite")) return "image_urls";
   if (lower.includes("nano-banana") || lower.startsWith("google/")) {
     return "image_input";
   }
@@ -489,7 +648,7 @@ function inferImageField(
 function inferResolutionField(modelId: string): ResolutionField {
   const lower = modelId.toLowerCase();
   if (lower.includes("seedream")) return "quality";
-  if (lower.includes("grok-imagine") && !lower.includes("image-2-0")) {
+  if (lower.includes("grok-imagine") || lower.includes("nano-banana-2-lite")) {
     return "none";
   }
   return "resolution";
@@ -514,16 +673,22 @@ export function inferModelContract(
   const mode = inferMode(id);
   const family = familyFromId(id);
   const resolutionField = inferResolutionField(id);
-  const ratios =
-    family === "gpt-image"
-      ? GPT_RATIOS
-      : family === "grok-imagine"
-        ? GROK_RATIOS
-        : family === "seedream"
-          ? SEEDREAM_RATIOS
-          : family === "flux-2"
-            ? FLUX_RATIOS
-            : COMMON_RATIOS;
+  const lower = id.toLowerCase();
+  const isGpt25 = /gpt-image-2[-.]5/.test(lower);
+  const isGpt2 = /gpt-image-2(?![-.]5)/.test(lower);
+  const ratios = isGpt25
+    ? GPT_25_RATIOS
+    : lower.includes("nano-banana-2-lite")
+      ? NANO_LITE_RATIOS
+      : family === "gpt-image"
+        ? GPT_RATIOS
+        : family === "grok-imagine"
+          ? GROK_RATIOS
+          : family === "seedream"
+            ? SEEDREAM_RATIOS
+            : family === "flux-2"
+              ? FLUX_RATIOS
+              : COMMON_RATIOS;
   return {
     id,
     label: labelFromId(id),
@@ -534,6 +699,19 @@ export function inferModelContract(
     supportedAspectRatios: ratios,
     supportedResolutions:
       resolutionField === "none" || family === "flux-2" ? UP_TO_2K : ALL_RESOLUTIONS,
+    oneKOnlyAspectRatios: isGpt25
+      ? GPT_25_ONE_K_ONLY
+      : isGpt2
+        ? GPT_IMAGE_2_ONE_K_ONLY
+        : undefined,
+    supportsBackground: isGpt25 || undefined,
+    maxInputImages: isGpt25
+      ? 16
+      : lower.includes("nano-banana-2-lite")
+        ? 10
+        : lower.includes("grok-imagine-image-2-0") && mode !== "text-to-image"
+          ? 5
+          : undefined,
     credits: credits(6, 10, 16),
     qualityMap:
       resolutionField === "quality"
@@ -740,8 +918,27 @@ export function parseDocsLlmsCatalog(markdown: string): ImageCatalog | undefined
   const costs: Record<string, Record<ImageResolution, number>> = {};
   const seen = new Set<string>();
   const docToId: Array<[RegExp, string]> = [
+    [/gpt-image-2-5-flare-text-to-image/i, "gpt-image-2-5-flare-text-to-image"],
+    [/gpt-image-2-5-flare-image-to-image/i, "gpt-image-2-5-flare-image-to-image"],
+    [
+      /gpt-image-2-5-sunburst-text-to-image/i,
+      "gpt-image-2-5-sunburst-text-to-image",
+    ],
+    [
+      /gpt-image-2-5-sunburst-image-to-image/i,
+      "gpt-image-2-5-sunburst-image-to-image",
+    ],
     [/gpt-image-2-text-to-image/i, "gpt-image-2-text-to-image"],
     [/gpt-image-2-image-to-image/i, "gpt-image-2-image-to-image"],
+    [
+      /grok-imagine-image-2-0\/text-to-image/i,
+      "grok-imagine-image-2-0/text-to-image",
+    ],
+    [
+      /grok-imagine-image-2-0\/image-to-image/i,
+      "grok-imagine-image-2-0/image-edit",
+    ],
+    [/nano-banana-2-lite/i, "nano-banana-2-lite"],
     [/1-5-text-to-image/i, "gpt-image/1.5-text-to-image"],
     [/1-5-image-to-image/i, "gpt-image/1.5-image-to-image"],
     [/flux2\/pro-text-to-image/i, "flux-2/pro-text-to-image"],

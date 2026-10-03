@@ -78,5 +78,32 @@ export function defaultModelId(
   if (preferred && models.some((model) => model.id === preferred)) {
     return preferred;
   }
-  return models[0]?.id ?? "gpt-image-2-text-to-image";
+  const paired = preferred ? pairedModelId(preferred, mode) : undefined;
+  if (paired && models.some((model) => model.id === paired)) return paired;
+  return models[0]?.id ?? "gpt-image-2-5-flare-text-to-image";
+}
+
+function pairedModelId(
+  modelId: string,
+  mode: GenerationMode,
+): string | undefined {
+  if (
+    modelId === "grok-imagine-image-2-0/text-to-image" &&
+    mode === "image-to-image"
+  ) {
+    return "grok-imagine-image-2-0/image-edit";
+  }
+  if (
+    modelId === "grok-imagine-image-2-0/image-edit" &&
+    mode === "text-to-image"
+  ) {
+    return "grok-imagine-image-2-0/text-to-image";
+  }
+  if (mode === "image-to-image" && modelId.includes("text-to-image")) {
+    return modelId.replace("text-to-image", "image-to-image");
+  }
+  if (mode === "text-to-image" && modelId.includes("image-to-image")) {
+    return modelId.replace("image-to-image", "text-to-image");
+  }
+  return undefined;
 }

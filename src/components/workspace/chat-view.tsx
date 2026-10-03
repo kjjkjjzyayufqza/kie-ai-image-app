@@ -141,6 +141,14 @@ export function ChatView({
                         <Badge variant="outline">{turnTasks.length}x</Badge>
                         <Badge variant="outline">{turn.parameters.resolution}</Badge>
                         <Badge variant="outline">{turn.parameters.aspectRatio}</Badge>
+                        {turn.parameters.background &&
+                        turn.parameters.background !== "auto" ? (
+                          <Badge variant="outline">
+                            {turn.parameters.background === "transparent"
+                              ? t("composer.backgroundTransparent")
+                              : t("composer.backgroundOpaque")}
+                          </Badge>
+                        ) : null}
                         <Badge variant="outline">
                           {turn.mode === "image-to-image"
                             ? t("chat.imageToImage")

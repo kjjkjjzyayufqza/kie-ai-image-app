@@ -119,6 +119,12 @@ export const zh = {
     persistFailed: "本地保存失败",
     aspectRatioAria: "图片比例",
     resolutionAria: "分辨率",
+    backgroundAria: "背景",
+    backgroundAuto: "自动",
+    backgroundOpaque: "不透明",
+    backgroundTransparent: "透明",
+    transparentHint:
+      "2K 或 4K 透明背景时，请描述孤立主体，不要背景、场景或阴影。图生图请明确要求抠出主体并保持背景透明。",
     countAria: "生成数量",
     generate: "生成 {count}",
     generating: "提交中",

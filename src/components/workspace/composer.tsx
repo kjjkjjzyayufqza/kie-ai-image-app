@@ -49,6 +49,7 @@ import type {
   AspectRatio,
   GenerationMode,
   GenerationRequest,
+  ImageBackground,
   ImageResolution,
   ReferenceUpload,
 } from "@/lib/domain";
@@ -64,11 +65,10 @@ import {
   resolveModelContract,
 } from "@/lib/image-catalog";
 import {
-  aspectRatios,
   batchCountSchema,
   generationRequestSchema,
   gptImage2CreditsPerImage,
-  resolutions,
+  imageBackgrounds,
 } from "@/lib/model-registry";
 import { mergeReference } from "@/lib/canvas-references";
 import { ingestReferenceFiles } from "@/lib/reference-ingest";
@@ -77,16 +77,14 @@ import { cn } from "@/lib/utils";
 import { useI18n } from "@/i18n/i18n-provider";
 
 const quickCounts = [1, 2, 4, 5, 10];
-const highResolutionBlockedRatios = new Set<AspectRatio>([
-  "5:4",
-  "4:5",
-  "3:1",
-  "1:3",
-  "9:21",
-]);
 const ACCEPTED_MIME = new Set(["image/jpeg", "image/png", "image/webp"]);
-const MAX_REFERENCE_COUNT = 16;
 const MAX_REFERENCE_BYTES = 30 * 1024 * 1024;
+const DEFAULT_MODEL_ID = "gpt-image-2-5-flare-image-to-image";
+const backgroundLabels = {
+  auto: "composer.backgroundAuto",
+  opaque: "composer.backgroundOpaque",
+  transparent: "composer.backgroundTransparent",
+} as const;
 
 interface ComposerProps {
   roomId: string;
@@ -126,10 +124,11 @@ export function Composer({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dropDepthRef = useRef(0);
   const [mode, setMode] = useState<GenerationMode>("image-to-image");
-  const [modelId, setModelId] = useState("gpt-image-2-image-to-image");
+  const [modelId, setModelId] = useState(DEFAULT_MODEL_ID);
   const [prompt, setPrompt] = useState("");
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>("auto");
   const [resolution, setResolution] = useState<ImageResolution>("1K");
+  const [background, setBackground] = useState<ImageBackground>("auto");
   const [countText, setCountText] = useState("5");
   const [referenceUploads, setReferenceUploads] = useState<ReferenceUpload[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -147,10 +146,11 @@ export function Composer({
   );
   const draftRef = useRef<ComposerDraft>({
     mode: "image-to-image",
-    model: "gpt-image-2-image-to-image",
+    model: DEFAULT_MODEL_ID,
     prompt: "",
     aspectRatio: "auto",
     resolution: "1K",
+    background: "auto",
     countText: "5",
     referenceUploads: [],
   });
@@ -178,6 +178,7 @@ export function Composer({
         setPrompt(saved.prompt);
         setAspectRatio(saved.aspectRatio);
         setResolution(saved.resolution);
+        setBackground(saved.background ?? "auto");
         setCountText(saved.countText);
         setReferenceUploads(saved.referenceUploads);
       });
@@ -193,6 +194,17 @@ export function Composer({
   const selectedModel =
     modelsForMode(catalog, mode).find((model) => model.id === modelId) ??
     modelsForMode(catalog, mode)[0];
+  const ratioOptions =
+    selectedModel && selectedModel.supportedAspectRatios.length > 0
+      ? selectedModel.supportedAspectRatios
+      : [];
+  const resolutionOptions = selectedModel?.supportedResolutions ?? [];
+  const showResolution = selectedModel?.resolutionField !== "none";
+  const showBackground = Boolean(selectedModel?.supportsBackground);
+  const maxReferenceCount = selectedModel?.maxInputImages ?? 16;
+  const oneKOnlyRatios = new Set<AspectRatio>(
+    selectedModel?.oneKOnlyAspectRatios ?? [],
+  );
   const catalogUnitCredits = selectedModel?.credits[resolution];
   const unitCredits =
     observedUnitCredits ??
@@ -244,47 +256,60 @@ export function Composer({
       contract && !contract.supportedAspectRatios.includes(aspectRatio)
         ? (contract.supportedAspectRatios[0] ?? "1:1")
         : aspectRatio;
-    const nextResolution =
+    let nextResolution =
       contract &&
       contract.resolutionField === "resolution" &&
       !contract.supportedResolutions.includes(resolution)
         ? (contract.supportedResolutions[0] ?? "1K")
         : resolution;
+    const nextBackground = contract?.supportsBackground ? background : "auto";
+    if (
+      contract?.resolutionField !== "none" &&
+      contract?.oneKOnlyAspectRatios?.includes(nextRatio) &&
+      nextResolution !== "1K"
+    ) {
+      nextResolution = "1K";
+    }
     setModelId(nextModel);
     if (nextRatio !== aspectRatio) setAspectRatio(nextRatio);
     if (nextResolution !== resolution) setResolution(nextResolution);
+    if (nextBackground !== background) setBackground(nextBackground);
     persistDraft({
       model: nextModel,
       aspectRatio: nextRatio,
       resolution: nextResolution,
+      background: nextBackground,
     });
   };
 
   const changeAspectRatio = (nextRatio: AspectRatio) => {
     setAspectRatio(nextRatio);
     const nextResolution =
-      highResolutionBlockedRatios.has(nextRatio) && resolution !== "1K"
-        ? "1K"
-        : resolution;
+      oneKOnlyRatios.has(nextRatio) && resolution !== "1K" ? "1K" : resolution;
     persistDraft({
       aspectRatio: nextRatio,
       resolution: nextResolution,
     });
-    if (highResolutionBlockedRatios.has(nextRatio) && resolution !== "1K") {
+    if (oneKOnlyRatios.has(nextRatio) && resolution !== "1K") {
       setResolution("1K");
       toast.message(t("composer.switchedTo1k"));
     }
   };
 
+  const changeBackground = (nextBackground: ImageBackground) => {
+    setBackground(nextBackground);
+    persistDraft({ background: nextBackground });
+  };
+
   const validateFilesLocally = useCallback(
     (files: File[]): string | null => {
       if (files.length === 0) return t("composer.noValidFiles");
-      const availableSlots = MAX_REFERENCE_COUNT - referenceUploads.length;
+      const availableSlots = maxReferenceCount - referenceUploads.length;
       if (availableSlots <= 0) {
-        return t("composer.maxReferences", { max: MAX_REFERENCE_COUNT });
+        return t("composer.maxReferences", { max: maxReferenceCount });
       }
       if (files.length > availableSlots) {
-        return t("composer.maxReferencesRemaining", { max: MAX_REFERENCE_COUNT, remaining: availableSlots });
+        return t("composer.maxReferencesRemaining", { max: maxReferenceCount, remaining: availableSlots });
       }
       for (const file of files) {
         if (!ACCEPTED_MIME.has(file.type)) {
@@ -296,7 +321,7 @@ export function Composer({
       }
       return null;
     },
-    [referenceUploads.length, t],
+    [maxReferenceCount, referenceUploads.length, t],
   );
 
   const handleFiles = async (
@@ -342,7 +367,7 @@ export function Composer({
       setReferenceUploads((current) => {
         let next = current;
         for (const upload of uploaded) {
-          next = mergeReference(next, upload, MAX_REFERENCE_COUNT);
+          next = mergeReference(next, upload, maxReferenceCount);
         }
         persistDraft({
           referenceUploads: next,
@@ -383,7 +408,7 @@ export function Composer({
         const next = mergeReference(
           current,
           canvasPickedReference,
-          MAX_REFERENCE_COUNT,
+          maxReferenceCount,
         );
         persistDraft({
           referenceUploads: next,
@@ -391,11 +416,11 @@ export function Composer({
         });
         return next;
       } catch {
-        toast.error(t("composer.maxReferences", { max: MAX_REFERENCE_COUNT }));
+        toast.error(t("composer.maxReferences", { max: maxReferenceCount }));
         return current;
       }
     });
-  }, [canvasPickedReference?.id, persistDraft, t]);
+  }, [canvasPickedReference?.id, maxReferenceCount, persistDraft, t]);
 
   const acceptsReferenceDrop = mode === "image-to-image" || layout === "canvas";
 
@@ -462,6 +487,7 @@ export function Composer({
       prompt,
       aspectRatio,
       resolution,
+      ...(showBackground ? { background } : {}),
       inputUrls:
         mode === "image-to-image"
           ? referenceUploads.map((upload) => upload.temporaryUrl)
@@ -548,7 +574,7 @@ export function Composer({
                 variant="outline"
                 size="sm"
                 className="h-10 shrink-0 active:scale-[0.98] sm:h-11"
-                disabled={uploading || referenceUploads.length >= MAX_REFERENCE_COUNT}
+                disabled={uploading || referenceUploads.length >= maxReferenceCount}
                 onClick={() => {
                   if (!apiKey) {
                     onOpenSettings();
@@ -642,14 +668,14 @@ export function Composer({
                 {!uploading && referenceUploads.length === 0 ? (
                   <p className="min-w-0 flex-1 px-1 text-xs leading-5 text-muted-foreground">
                     <span className="hidden sm:inline">
-                      {t("composer.dropHint", { max: MAX_REFERENCE_COUNT })}
+                      {t("composer.dropHint", { max: maxReferenceCount })}
                     </span>
                   </p>
                 ) : null}
               </div>
 
               <span className="shrink-0 self-center pr-1 text-xs tabular-nums text-muted-foreground">
-                {referenceUploads.length}/{MAX_REFERENCE_COUNT}
+                {referenceUploads.length}/{maxReferenceCount}
               </span>
             </div>
             {referenceError ? (
@@ -772,7 +798,7 @@ export function Composer({
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              {aspectRatios.map((ratio) => (
+              {ratioOptions.map((ratio) => (
                 <SelectItem key={ratio} value={ratio}>
                   {ratio}
                 </SelectItem>
@@ -780,31 +806,55 @@ export function Composer({
             </SelectContent>
           </Select>
 
-          <Select
-            value={resolution}
-            onValueChange={(value) => {
-              const nextResolution = value as ImageResolution;
-              setResolution(nextResolution);
-              persistDraft({ resolution: nextResolution });
-            }}
-          >
-            <SelectTrigger size="sm" aria-label={t("composer.resolutionAria")}>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {resolutions.map((value) => (
-                <SelectItem
-                  key={value}
-                  value={value}
-                  disabled={
-                    value !== "1K" && highResolutionBlockedRatios.has(aspectRatio)
-                  }
-                >
-                  {value}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          {showResolution ? (
+            <Select
+              value={resolution}
+              onValueChange={(value) => {
+                const nextResolution = value as ImageResolution;
+                setResolution(nextResolution);
+                persistDraft({ resolution: nextResolution });
+              }}
+            >
+              <SelectTrigger size="sm" aria-label={t("composer.resolutionAria")}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {resolutionOptions.map((value) => (
+                  <SelectItem
+                    key={value}
+                    value={value}
+                    disabled={value !== "1K" && oneKOnlyRatios.has(aspectRatio)}
+                  >
+                    {value}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : null}
+
+          {showBackground ? (
+            <Select
+              value={background}
+              onValueChange={(value) => changeBackground(value as ImageBackground)}
+            >
+              <SelectTrigger size="sm" aria-label={t("composer.backgroundAria")}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {imageBackgrounds.map((value) => (
+                  <SelectItem key={value} value={value}>
+                    {t(backgroundLabels[value])}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : null}
+
+          {showBackground && background === "transparent" ? (
+            <p className="basis-full px-1 text-[11px] leading-4 text-muted-foreground">
+              {t("composer.transparentHint")}
+            </p>
+          ) : null}
 
           <div className="hidden items-center gap-1 lg:flex">
             {quickCounts.map((quickCount) => (

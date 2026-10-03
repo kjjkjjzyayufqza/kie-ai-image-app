@@ -3,10 +3,11 @@ import { z } from "zod";
 import type {
   AspectRatio,
   GenerationMode,
+  ImageBackground,
   ImageResolution,
   ReferenceUpload,
 } from "@/lib/domain";
-import { aspectRatios, resolutions } from "@/lib/model-registry";
+import { aspectRatios, imageBackgrounds, resolutions } from "@/lib/model-registry";
 import { isRenderableKieUrl } from "@/lib/kie-urls";
 
 const STORAGE_PREFIX = "kie-ai-workspace.composer-draft.v1:";
@@ -32,6 +33,7 @@ const composerDraftSchema = z
     prompt: z.string().max(20_000),
     aspectRatio: z.enum(aspectRatios),
     resolution: z.enum(resolutions),
+    background: z.enum(imageBackgrounds).optional(),
     countText: z.string().max(3),
     referenceUploads: z.array(referenceUploadSchema).max(16),
   })
@@ -43,6 +45,7 @@ export interface ComposerDraft {
   prompt: string;
   aspectRatio: AspectRatio;
   resolution: ImageResolution;
+  background?: ImageBackground;
   countText: string;
   referenceUploads: ReferenceUpload[];
 }
