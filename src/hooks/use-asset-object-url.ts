@@ -16,22 +16,30 @@ export function useAssetObjectUrl(asset: Asset | undefined): {
   pending: boolean;
   persistError?: string;
 } {
-  const revision = asset
-    ? objectUrlRevision(asset.id, [
+  const assetId = asset?.id;
+  const revision = assetId
+    ? objectUrlRevision(assetId, [
         asset.persistStatus,
         asset.chunkCount,
         asset.url,
       ])
     : "";
   const cached = revision ? getCachedObjectUrl(revision) : undefined;
+  const [trackedRevision, setTrackedRevision] = useState(revision);
   const [src, setSrc] = useState<string | undefined>(cached);
   const [local, setLocal] = useState(Boolean(cached));
-  const [pending, setPending] = useState(
-    !cached && asset?.persistStatus === "pending",
-  );
+  const [pending, setPending] = useState(!cached && Boolean(assetId));
+
+  if (revision !== trackedRevision) {
+    const hit = revision ? getCachedObjectUrl(revision) : undefined;
+    setTrackedRevision(revision);
+    setSrc(hit);
+    setLocal(Boolean(hit));
+    setPending(!hit && Boolean(assetId));
+  }
 
   useEffect(() => {
-    if (!asset) {
+    if (!assetId) {
       setSrc(undefined);
       setLocal(false);
       setPending(false);
@@ -46,17 +54,19 @@ export function useAssetObjectUrl(asset: Asset | undefined): {
       return;
     }
 
+    const remoteUrl = asset?.url || undefined;
     let cancelled = false;
-    setPending(asset.persistStatus === "pending");
+    setPending(true);
+    setLocal(false);
 
-    void loadAssetBytes(asset.id)
+    void loadAssetBytes(assetId)
       .then((stored) => {
         if (cancelled) return;
         if (stored) {
           const url = rememberObjectUrl(
-            asset.id,
+            assetId,
             revision,
-            new Blob([stored.bytes as BlobPart], { type: stored.mimeType }),
+            new Blob([stored.bytes.slice()], { type: stored.mimeType }),
           );
           setSrc(url);
           setLocal(true);
@@ -64,24 +74,20 @@ export function useAssetObjectUrl(asset: Asset | undefined): {
           return;
         }
         setLocal(false);
-        setPending(asset.persistStatus === "pending");
-        setSrc(
-          asset.persistStatus === "failed" || asset.persistStatus === "pending"
-            ? undefined
-            : asset.url,
-        );
+        setPending(false);
+        setSrc(remoteUrl);
       })
       .catch(() => {
         if (cancelled) return;
         setLocal(false);
         setPending(false);
-        setSrc(asset.persistStatus === "stored" ? undefined : asset.url);
+        setSrc(remoteUrl);
       });
 
     return () => {
       cancelled = true;
     };
-  }, [asset, revision]);
+  }, [asset?.url, assetId, revision]);
 
   return {
     src,

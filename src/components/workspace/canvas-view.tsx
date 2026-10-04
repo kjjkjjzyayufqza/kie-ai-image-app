@@ -474,7 +474,12 @@ function CanvasNodeCard({
             draggable={false}
             className="size-full object-cover"
           />
-        ) : generating || stored.pending ? (
+        ) : stored.pending ? (
+          <div className="flex size-full flex-col items-center justify-center gap-2 text-xs text-muted-foreground">
+            <LoaderCircle className="size-5 animate-spin" />
+            {t("gallery.loadingLocal")}
+          </div>
+        ) : generating ? (
           <div className="flex size-full flex-col items-center justify-center gap-2 text-xs text-muted-foreground">
             <LoaderCircle className="size-5 animate-spin" />
             {t("canvas.generating")}

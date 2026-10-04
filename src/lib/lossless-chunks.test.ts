@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { ingestRemoteAsset } from "@/lib/asset-ingest";
-import { loadAssetBytes, storeAssetBytes } from "@/lib/asset-blob-store";
+import { ingestRemoteAsset, repairUnstoredAssets } from "@/lib/asset-ingest";
+import {
+  loadAssetBytes,
+  storedChunkToBytes,
+  storeAssetBytes,
+} from "@/lib/asset-blob-store";
 import { db } from "@/lib/db";
 import {
   compressIntoChunks,
@@ -122,5 +126,64 @@ describe("asset blob store", () => {
     const loaded = await loadAssetBytes("asset-ingest");
     expect(Array.from(loaded!.bytes)).toEqual(Array.from(original));
     expect((await db.assets.get("asset-ingest"))?.persistStatus).toBe("stored");
+  });
+
+  it("reads array buffers, byte views, and blobs as image bytes", async () => {
+    const original = pngBytes(32);
+    const viewBuffer = new Uint8Array(original.byteLength + 8);
+    viewBuffer.set(original, 4);
+    const view = viewBuffer.subarray(4, 4 + original.byteLength);
+
+    expect(Array.from(await storedChunkToBytes(original.buffer))).toEqual(
+      Array.from(original),
+    );
+    expect(Array.from(await storedChunkToBytes(view))).toEqual(
+      Array.from(original),
+    );
+    const blobBytes = new ArrayBuffer(original.byteLength);
+    new Uint8Array(blobBytes).set(original);
+    expect(
+      Array.from(await storedChunkToBytes(new Blob([blobBytes]))),
+    ).toEqual(Array.from(original));
+  });
+
+  it("repairs a pending asset and leaves a recent failure alone", async () => {
+    const original = pngBytes(64);
+    const base = {
+      localTaskId: "task-repair",
+      roomId: "room-1",
+      outputOrdinal: 0,
+      url: "https://tempfile.redpandaai.co/generated.png",
+      isRenderable: true,
+      availability: "unchecked" as const,
+      favorite: false,
+      tags: [],
+      collectionIds: [],
+      createdAt: Date.now(),
+    };
+    await db.assets.bulkPut([
+      { ...base, id: "asset-pending", persistStatus: "pending" as const },
+      {
+        ...base,
+        id: "asset-failed",
+        outputOrdinal: 1,
+        persistStatus: "failed" as const,
+        persistError: "download failed",
+        lastCheckedAt: Date.now(),
+      },
+    ]);
+
+    let fetches = 0;
+    await repairUnstoredAssets(async () => {
+      fetches += 1;
+      return { bytes: original, mimeType: "image/png" };
+    });
+
+    expect(fetches).toBe(1);
+    expect((await db.assets.get("asset-pending"))?.persistStatus).toBe("stored");
+    expect(Array.from((await loadAssetBytes("asset-pending"))!.bytes)).toEqual(
+      Array.from(original),
+    );
+    expect((await db.assets.get("asset-failed"))?.persistStatus).toBe("failed");
   });
 });

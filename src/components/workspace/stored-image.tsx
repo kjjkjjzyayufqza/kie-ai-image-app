@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { ImageOff } from "lucide-react";
 
 import { ImageLoadFrame } from "@/components/workspace/ui-states";
@@ -18,15 +19,21 @@ interface StoredImageProps {
 export function StoredImage({ asset, alt, className, onLoad }: StoredImageProps) {
   const { t } = useI18n();
   const { src, local, pending, persistError } = useAssetObjectUrl(asset);
-  const loaded = Boolean(src) && !pending;
+  const [brokenSrc, setBrokenSrc] = useState<string>();
+  const broken = Boolean(src) && brokenSrc === src;
+  const loaded = Boolean(src) && !pending && !broken;
 
-  if (!src) {
+  useEffect(() => {
+    setBrokenSrc(undefined);
+  }, [src]);
+
+  if (!src || broken) {
     return (
       <div className="flex size-full flex-col items-center justify-center gap-2 p-3 text-center">
         <ImageOff className="size-5 text-muted-foreground" />
         <p className="text-xs text-muted-foreground">
-          {pending
-            ? t("gallery.persistPending")
+          {pending && !broken
+            ? t("gallery.loadingLocal")
             : persistError ?? t("gallery.persistFailed")}
         </p>
       </div>
@@ -48,6 +55,7 @@ export function StoredImage({ asset, alt, className, onLoad }: StoredImageProps)
           className,
         )}
         onLoad={onLoad}
+        onError={() => setBrokenSrc(src)}
       />
     </ImageLoadFrame>
   );

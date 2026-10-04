@@ -3,7 +3,10 @@
 import { useEffect, useRef, useState } from "react";
 
 import { t } from "@/i18n/runtime";
-import { recordSuccessfulTaskAssets } from "@/lib/asset-ingest";
+import {
+  recordSuccessfulTaskAssets,
+  repairUnstoredAssets,
+} from "@/lib/asset-ingest";
 import { syncCanvasWithAssets } from "@/lib/canvas-graph";
 import { db } from "@/lib/db";
 import type { GenerationTask } from "@/lib/domain";
@@ -38,6 +41,7 @@ export function useTaskCoordinator(apiKey: string, keyFingerprint: string) {
       let lastSubmissionAt = 0;
       let lastCreditsAt = 0;
       let lastLeaseRenewalAt = 0;
+      let lastRepairAt = 0;
 
       while (!controller.signal.aborted) {
         const now = Date.now();
@@ -53,6 +57,10 @@ export function useTaskCoordinator(apiKey: string, keyFingerprint: string) {
           if (submitted) lastSubmissionAt = now;
         }
         await pollNextTask(apiKey, keyFingerprint);
+        if (now - lastRepairAt >= 5_000) {
+          await repairUnstoredAssets((url) => fetchKieImageBytes(apiKey, url));
+          lastRepairAt = Date.now();
+        }
         if (now - lastCreditsAt >= 30_000) {
           await refreshCredits(apiKey, keyFingerprint);
           lastCreditsAt = now;

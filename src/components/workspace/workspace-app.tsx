@@ -327,6 +327,7 @@ export function WorkspaceApp() {
                 apiKey={apiKey}
                 keyFingerprint={fingerprint}
                 hasApiKey={Boolean(apiKey)}
+                roomId={currentRoomId ?? ""}
                 scrollRequest={chatScrollRequest}
                 onOpenSettings={() => setSettingsOpen(true)}
               />

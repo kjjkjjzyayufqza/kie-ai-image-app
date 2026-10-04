@@ -100,6 +100,50 @@ export async function recordSuccessfulTaskAssets(input: {
   return assets;
 }
 
+const FAILED_REPAIR_BACKOFF_MS = 60_000;
+const REPAIR_BATCH_LIMIT = 3;
+
+export async function repairUnstoredAssets(
+  fetchBytes: AssetByteFetcher,
+): Promise<void> {
+  const now = Date.now();
+  const candidates = await db.assets
+    .filter(
+      (asset) =>
+        asset.isRenderable &&
+        asset.persistStatus !== "stored" &&
+        asset.url.length > 0,
+    )
+    .limit(20)
+    .toArray();
+
+  let repaired = 0;
+  for (const asset of candidates) {
+    if (repaired >= REPAIR_BATCH_LIMIT) break;
+    if (
+      asset.persistStatus === "failed" &&
+      asset.lastCheckedAt !== undefined &&
+      now - asset.lastCheckedAt < FAILED_REPAIR_BACKOFF_MS
+    ) {
+      continue;
+    }
+    const existing = await loadAssetBytes(asset.id).catch(() => undefined);
+    if (existing) {
+      await db.assets.update(asset.id, {
+        persistStatus: "stored",
+        persistError: undefined,
+        byteLength: existing.originalByteLength,
+        mimeType: existing.mimeType,
+        chunkCount: existing.chunkCount,
+        availability: "available",
+      });
+      continue;
+    }
+    repaired += 1;
+    await ingestRemoteAsset(asset, fetchBytes);
+  }
+}
+
 export async function readLocalAssetObjectUrl(
   assetId: string,
 ): Promise<string | undefined> {

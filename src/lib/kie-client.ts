@@ -170,13 +170,17 @@ export async function downloadStoredAsset(
   assetId: string,
   filename: string,
 ): Promise<boolean> {
-  const stored = await loadAssetBytes(assetId);
-  if (!stored) return false;
-  downloadBlob(
-    new Blob([Uint8Array.from(stored.bytes)], { type: stored.mimeType }),
-    filename,
-  );
-  return true;
+  try {
+    const stored = await loadAssetBytes(assetId);
+    if (!stored) return false;
+    downloadBlob(
+      new Blob([stored.bytes.slice()], { type: stored.mimeType }),
+      filename,
+    );
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export async function downloadKieAsset(

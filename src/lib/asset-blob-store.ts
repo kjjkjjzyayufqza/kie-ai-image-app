@@ -1,10 +1,13 @@
+import {
+  decompressOffThread,
+  scheduleAssetLoad,
+} from "@/lib/asset-decode-queue";
 import { db } from "@/lib/db";
 import type { AssetChunkRecord } from "@/lib/domain";
 import {
   DEFAULT_CHUNK_SIZE,
   LOSSLESS_CODEC,
   compressIntoChunks,
-  decompressChunks,
   detectImageMime,
 } from "@/lib/lossless-chunks";
 
@@ -64,7 +67,44 @@ export async function storeAssetBytes(
   };
 }
 
-export async function loadAssetBytes(
+function isBlob(value: unknown): value is Blob {
+  return (
+    typeof Blob !== "undefined" &&
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as Blob).arrayBuffer === "function" &&
+    typeof (value as Blob).size === "number" &&
+    typeof (value as Blob).type === "string"
+  );
+}
+
+function isArrayBufferLike(value: unknown): value is ArrayBuffer {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !ArrayBuffer.isView(value) &&
+    !isBlob(value) &&
+    typeof (value as ArrayBuffer).byteLength === "number" &&
+    typeof (value as ArrayBuffer).slice === "function"
+  );
+}
+
+export async function storedChunkToBytes(value: unknown): Promise<Uint8Array> {
+  if (isBlob(value)) {
+    return new Uint8Array(await value.arrayBuffer());
+  }
+  if (ArrayBuffer.isView(value)) {
+    const copy = new Uint8Array(value.byteLength);
+    copy.set(new Uint8Array(value.buffer, value.byteOffset, value.byteLength));
+    return copy;
+  }
+  if (isArrayBufferLike(value)) {
+    return new Uint8Array(value);
+  }
+  throw new Error("Stored image chunk has an unsupported binary type.");
+}
+
+async function readAssetBytes(
   assetId: string,
 ): Promise<StoredAssetBytes | undefined> {
   const records = await db.assetChunks
@@ -78,10 +118,12 @@ export async function loadAssetBytes(
     throw new Error("Stored image chunks are incomplete.");
   }
 
-  const restored = await decompressChunks({
+  const restored = await decompressOffThread({
     codec: first.codec,
     originalByteLength: first.originalByteLength,
-    chunks: records.map((record) => new Uint8Array(record.bytes)),
+    chunks: await Promise.all(
+      records.map((record) => storedChunkToBytes(record.bytes)),
+    ),
   });
 
   return {
@@ -91,6 +133,12 @@ export async function loadAssetBytes(
     chunkCount: records.length,
     codec: first.codec,
   };
+}
+
+export function loadAssetBytes(
+  assetId: string,
+): Promise<StoredAssetBytes | undefined> {
+  return scheduleAssetLoad(() => readAssetBytes(assetId));
 }
 
 export async function markAssetPersistFailed(

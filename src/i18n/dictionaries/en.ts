@@ -154,6 +154,7 @@ export const en = {
     emptyDescription:
       "Successful generations appear here. Images are stored locally in this browser.",
     persistPending: "Saving locally…",
+    loadingLocal: "Reading the local image…",
     persistFailed: "Local copy missing. The original URL may have expired.",
     noMatchesDescription: "Try adjusting search, favorites, or status filters.",
     noVisibleDescription: "There are no images to show.",

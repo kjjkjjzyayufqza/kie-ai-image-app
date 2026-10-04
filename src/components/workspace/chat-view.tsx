@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 import { Copy, ImagePlus, KeyRound, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 
@@ -11,6 +11,7 @@ import { TaskCard } from "@/components/workspace/task-card";
 import { EmptyState } from "@/components/workspace/ui-states";
 import { useI18n } from "@/i18n/i18n-provider";
 import { copyText } from "@/lib/browser-actions";
+import { isNearChatBottom } from "@/lib/chat-scroll";
 import type { Asset, GenerationTask, Turn } from "@/lib/domain";
 
 interface ChatViewProps {
@@ -20,6 +21,7 @@ interface ChatViewProps {
   apiKey: string;
   keyFingerprint: string;
   hasApiKey: boolean;
+  roomId: string;
   scrollRequest: number;
   onOpenSettings: () => void;
 }
@@ -31,11 +33,23 @@ export function ChatView({
   apiKey,
   keyFingerprint,
   hasApiKey,
+  roomId,
   scrollRequest,
   onOpenSettings,
 }: ChatViewProps) {
   const { t, locale } = useI18n();
   const viewportRef = useRef<HTMLDivElement>(null);
+  const pinnedRef = useRef(true);
+  const seenRoomRef = useRef(roomId);
+  const seenScrollRef = useRef(scrollRequest);
+  if (seenRoomRef.current !== roomId) {
+    seenRoomRef.current = roomId;
+    pinnedRef.current = true;
+  }
+  if (seenScrollRef.current !== scrollRequest) {
+    seenScrollRef.current = scrollRequest;
+    pinnedRef.current = true;
+  }
   const tasksByTurn = new Map<string, GenerationTask[]>();
   for (const task of tasks) {
     const list = tasksByTurn.get(task.turnId) ?? [];
@@ -44,21 +58,22 @@ export function ChatView({
   }
   const assetsByTask = new Map(assets.map((asset) => [asset.localTaskId, asset]));
 
+  useLayoutEffect(() => {
+    if (!roomId || !pinnedRef.current) return;
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    viewport.scrollTo({ top: viewport.scrollHeight, behavior: "auto" });
+  }, [roomId, scrollRequest, tasks.length, turns.length]);
+
   useEffect(() => {
-    if (scrollRequest === 0) return;
-    const frame = window.requestAnimationFrame(() => {
-      const viewport = viewportRef.current;
-      if (!viewport) return;
-      const reduceMotion = window.matchMedia(
-        "(prefers-reduced-motion: reduce)",
-      ).matches;
-      viewport.scrollTo({
-        top: viewport.scrollHeight,
-        behavior: reduceMotion ? "auto" : "smooth",
-      });
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [scrollRequest, tasks.length]);
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    const onScroll = () => {
+      pinnedRef.current = isNearChatBottom(viewport);
+    };
+    viewport.addEventListener("scroll", onScroll, { passive: true });
+    return () => viewport.removeEventListener("scroll", onScroll);
+  }, [roomId]);
 
   return (
     <ScrollArea

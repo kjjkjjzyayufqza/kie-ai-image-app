@@ -152,6 +152,7 @@ export const zh = {
     noMatchesTitle: "没有匹配的图片",
     emptyDescription: "生成成功后的图片会出现在这里，并保存在当前浏览器本地。",
     persistPending: "正在保存到本地…",
+    loadingLocal: "正在读取本地图片…",
     persistFailed: "本地副本缺失，原始 URL 可能已过期。",
     noMatchesDescription: "尝试调整搜索词、收藏或状态筛选。",
     noVisibleDescription: "当前没有可显示的图片。",
