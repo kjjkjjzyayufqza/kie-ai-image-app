@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   FALLBACK_IMAGE_COST_LIST,
   FALLBACK_IMAGE_MODELS,
+  modelsForMode,
+  parseDocsLlmsCatalog,
   parseKieCatalog,
   resolveImageCatalog,
 } from "@/lib/image-catalog";
@@ -75,6 +77,27 @@ describe("generationRequestSchema", () => {
       prompt: "A granite kitchen counter in morning light",
       aspect_ratio: "1:1",
       resolution: "1K",
+    });
+  });
+
+  it("maps nano-banana-2-1 image-to-image onto image_input", () => {
+    const payload = toKieCreatePayload({
+      model: "nano-banana-2-1",
+      mode: "image-to-image",
+      prompt: "Keep the product, change the backdrop",
+      aspectRatio: "auto",
+      resolution: "2K",
+      inputUrls: ["https://tempfile.redpandaai.co/reference.png"],
+    });
+
+    expect(payload).toEqual({
+      model: "nano-banana-2-1",
+      input: {
+        prompt: "Keep the product, change the backdrop",
+        aspect_ratio: "auto",
+        resolution: "2K",
+        image_input: ["https://tempfile.redpandaai.co/reference.png"],
+      },
     });
   });
 
@@ -245,6 +268,26 @@ describe("image catalog merge", () => {
     expect(banana?.credits["1K"]).toBe(8);
     expect(catalog?.costs["flux-2/pro-text-to-image"]["1K"]).toBe(5);
     expect(catalog?.costs["nano-banana-2"]["1K"]).toBe(8);
+  });
+
+  it("includes nano-banana-2-1 in the fallback catalog for text and image modes", () => {
+    const catalog = resolveImageCatalog(null);
+    const model = catalog.models.find((entry) => entry.id === "nano-banana-2-1");
+    expect(model?.mode).toBe("both");
+    expect(model?.maxInputImages).toBe(10);
+    expect(modelsForMode(catalog, "text-to-image").some((m) => m.id === "nano-banana-2-1")).toBe(
+      true,
+    );
+    expect(
+      modelsForMode(catalog, "image-to-image").some((m) => m.id === "nano-banana-2-1"),
+    ).toBe(true);
+  });
+
+  it("discovers nano-banana-2-1 from Kie docs llms links", () => {
+    const catalog = parseDocsLlmsCatalog(
+      "- [使用 nano-banana-2-1 生成图片](https://docs.kie.ai/cn/market/google/nanobanana-2-1.md)",
+    );
+    expect(catalog?.models.some((model) => model.id === "nano-banana-2-1")).toBe(true);
   });
 
   it("falls back to the maintained model list and cost list", () => {

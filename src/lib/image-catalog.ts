@@ -385,6 +385,19 @@ export const FALLBACK_IMAGE_MODELS: readonly ImageModelDefinition[] = [
     qualityMap: { "1K": "basic", "2K": "high", "4K": "high" },
   }),
   defineModel({
+    id: "nano-banana-2-1",
+    label: "Nano Banana 2.1",
+    family: "nano-banana",
+    mode: "both",
+    imageField: "image_input",
+    resolutionField: "resolution",
+    supportedAspectRatios: NANO_LITE_RATIOS,
+    supportedResolutions: ALL_RESOLUTIONS,
+    maxInputImages: 10,
+    // Fallback credits; live Kie catalog overrides when available.
+    credits: credits(8, 12, 18),
+  }),
+  defineModel({
     id: "nano-banana-2",
     label: "Nano Banana 2",
     family: "nano-banana",
@@ -678,7 +691,8 @@ export function inferModelContract(
   const isGpt2 = /gpt-image-2(?![-.]5)/.test(lower);
   const ratios = isGpt25
     ? GPT_25_RATIOS
-    : lower.includes("nano-banana-2-lite")
+    : lower.includes("nano-banana-2-lite") ||
+        lower.includes("nano-banana-2-1")
       ? NANO_LITE_RATIOS
       : family === "gpt-image"
         ? GPT_RATIOS
@@ -707,7 +721,8 @@ export function inferModelContract(
     supportsBackground: isGpt25 || undefined,
     maxInputImages: isGpt25
       ? 16
-      : lower.includes("nano-banana-2-lite")
+      : lower.includes("nano-banana-2-lite") ||
+          lower.includes("nano-banana-2-1")
         ? 10
         : lower.includes("grok-imagine-image-2-0") && mode !== "text-to-image"
           ? 5
@@ -938,6 +953,7 @@ export function parseDocsLlmsCatalog(markdown: string): ImageCatalog | undefined
       /grok-imagine-image-2-0\/image-to-image/i,
       "grok-imagine-image-2-0/image-edit",
     ],
+    [/nanobanana-2-1|nano-banana-2-1/i, "nano-banana-2-1"],
     [/nano-banana-2-lite/i, "nano-banana-2-lite"],
     [/1-5-text-to-image/i, "gpt-image/1.5-text-to-image"],
     [/1-5-image-to-image/i, "gpt-image/1.5-image-to-image"],
